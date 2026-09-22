@@ -5,7 +5,15 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-from data_utils import encode_sentences, load_sentences, load_vocab, tokenize, encode_sentence, EOS
+from data_utils import (
+    encode_sentence,
+    encode_sentences,
+    load_sentences,
+    load_vocab,
+    punctuation_ids,
+    tokenize,
+    EOS,
+)
 
 
 class LSTMLanguageModel(nn.Module):
@@ -65,12 +73,20 @@ def train_epoch(model, data, optimizer, criterion, bptt, clip=0.25):
 
 
 @torch.no_grad()
-def evaluate(model, data, criterion, bptt, k_list=(1, 5, 10)):
+def evaluate(model, data, criterion, bptt, k_list=(1, 5, 10), punct_ids=frozenset()):
+    """Reports top-k accuracy both over all tokens and restricted to
+    positions where the true next token isn't in punct_ids (real words only)."""
     model.eval()
     total_loss = 0.0
     total_tokens = 0
-    hits = {k: 0 for k in k_list}
+    hits_all = {k: 0 for k in k_list}
+    hits_words = {k: 0 for k in k_list}
     n_predictions = 0
+    n_word_predictions = 0
+    punct_tensor = (
+        torch.tensor(sorted(punct_ids), dtype=torch.long, device=data.device)
+        if punct_ids else None
+    )
 
     for i in range(0, data.size(1) - 1, bptt):
         x, y = get_batch(data, i, bptt)
@@ -80,15 +96,25 @@ def evaluate(model, data, criterion, bptt, k_list=(1, 5, 10)):
         total_loss += loss.item() * n
         total_tokens += n
 
+        if punct_tensor is not None:
+            word_mask = ~torch.isin(y, punct_tensor)
+        else:
+            word_mask = torch.ones_like(y, dtype=torch.bool)
+
         topk = logits.topk(max(k_list), dim=-1).indices
+        correct = (topk == y.unsqueeze(-1))
         for k in k_list:
-            hits[k] += (topk[..., :k] == y.unsqueeze(-1)).any(-1).sum().item()
+            hit_k = correct[..., :k].any(-1)
+            hits_all[k] += hit_k.sum().item()
+            hits_words[k] += (hit_k & word_mask).sum().item()
         n_predictions += n
+        n_word_predictions += word_mask.sum().item()
 
     avg_loss = total_loss / total_tokens
     perplexity = torch.exp(torch.tensor(avg_loss)).item()
-    topk_acc = {k: hits[k] / n_predictions for k in k_list}
-    return {"perplexity": perplexity, "topk_acc": topk_acc}
+    topk_acc = {k: hits_all[k] / n_predictions for k in k_list}
+    topk_acc_words = {k: hits_words[k] / n_word_predictions for k in k_list}
+    return {"perplexity": perplexity, "topk_acc": topk_acc, "topk_acc_words": topk_acc_words}
 
 
 @torch.no_grad()
@@ -125,6 +151,7 @@ def main():
     word2id, id2word = load_vocab(data_dir / "vocab.json")
     vocab_size = len(word2id)
     eos_id = word2id[EOS]
+    punct_ids = punctuation_ids(word2id)
 
     train_sents = load_sentences(data_dir / "train.txt")
     val_sents = load_sentences(data_dir / "val.txt")
@@ -148,16 +175,22 @@ def main():
     start = time.time()
     for epoch in range(1, args.epochs + 1):
         train_loss = train_epoch(model, train_data, optimizer, criterion, args.bptt)
-        val_metrics = evaluate(model, val_data, criterion, args.bptt)
+        val_metrics = evaluate(model, val_data, criterion, args.bptt, punct_ids=punct_ids)
         print(
             f"epoch {epoch}: train_loss={train_loss:.3f} "
-            f"val_ppl={val_metrics['perplexity']:.2f} val_top5={val_metrics['topk_acc'][5]:.3%}"
+            f"val_ppl={val_metrics['perplexity']:.2f} "
+            f"val_top5(all)={val_metrics['topk_acc'][5]:.3%} "
+            f"val_top5(words)={val_metrics['topk_acc_words'][5]:.3%}"
         )
     train_time = time.time() - start
     print(f"train time: {train_time:.1f}s")
 
-    test_metrics = evaluate(model, test_data, criterion, args.bptt)
-    print(f"test: perplexity={test_metrics['perplexity']:.2f} top-5 acc={test_metrics['topk_acc'][5]:.3%}")
+    test_metrics = evaluate(model, test_data, criterion, args.bptt, punct_ids=punct_ids)
+    print(
+        f"test: perplexity={test_metrics['perplexity']:.2f} "
+        f"top-5 acc (all)={test_metrics['topk_acc'][5]:.3%} "
+        f"top-5 acc (words only)={test_metrics['topk_acc_words'][5]:.3%}"
+    )
 
     models_dir = Path(args.models_dir)
     models_dir.mkdir(parents=True, exist_ok=True)

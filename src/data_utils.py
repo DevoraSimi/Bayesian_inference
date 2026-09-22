@@ -6,12 +6,18 @@ from pathlib import Path
 UNK = "<unk>"
 EOS = "<eos>"
 
-WORD_RE = re.compile(r"[a-zA-Z’']+")
+PUNCT_CHARS = ".,!?;:—“”‘()"
+TOKEN_RE = re.compile(r"[a-zA-Z’']+|[" + re.escape(PUNCT_CHARS) + "]")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 def tokenize(text):
-    return [w.lower() for w in WORD_RE.findall(text)]
+    return [w.lower() for w in TOKEN_RE.findall(text)]
+
+
+def punctuation_ids(word2id):
+    """Vocabulary ids that are punctuation tokens rather than real words."""
+    return {idx for w, idx in word2id.items() if w in PUNCT_CHARS}
 
 
 def split_sentences(text):
@@ -24,7 +30,7 @@ def text_to_sentences(text, min_len=2, max_len=50):
     sentences = []
     for raw in split_sentences(text):
         tokens = tokenize(raw)
-        if min_len <= len(tokens) <= max_len: # remove outliers that are too short or too long
+        if min_len <= len(tokens): # <= max_len: # remove outliers that are too short or too long
             sentences.append(tokens)
     return sentences
 

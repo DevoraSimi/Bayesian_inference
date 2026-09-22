@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from data_utils import encode_sentences, load_sentences, load_vocab
+from data_utils import encode_sentences, load_sentences, load_vocab, punctuation_ids
 
 
 class ConvergenceMonitor:
@@ -155,15 +155,19 @@ def suggest_next_words(model, prefix_ids, id2word, k=5):
     return [(id2word[i], float(dist[i])) for i in top_idx]
 
 
-def evaluate_hmm(model, id_sequences, k_list=(1, 5, 10)):
+def evaluate_hmm(model, id_sequences, k_list=(1, 5, 10), punct_ids=frozenset()):
     """Single incremental forward pass per sequence: at each step predict the
-    next word from the prefix seen so far, then fold in the true observation."""
+    next word from the prefix seen so far, then fold in the true observation.
+    Reports top-k accuracy both over all tokens and restricted to positions
+    where the true next token isn't in punct_ids (real words only)."""
     A = model.transmat_
     B = model.emissionprob_
     total_log_prob = 0.0
     total_tokens = 0
-    hits = {k: 0 for k in k_list}
+    hits_all = {k: 0 for k in k_list}
+    hits_words = {k: 0 for k in k_list}
     n_predictions = 0
+    n_word_predictions = 0
 
     for seq in id_sequences:
         alpha = model.startprob_ * B[:, seq[0]]
@@ -177,10 +181,16 @@ def evaluate_hmm(model, id_sequences, k_list=(1, 5, 10)):
             word_dist = next_state_dist @ B
 
             ranked = np.argsort(-word_dist)
+            is_word = o not in punct_ids
             for k in k_list:
-                if o in ranked[:k]:
-                    hits[k] += 1
+                hit = o in ranked[:k]
+                if hit:
+                    hits_all[k] += 1
+                if is_word and hit:
+                    hits_words[k] += 1
             n_predictions += 1
+            if is_word:
+                n_word_predictions += 1
 
             alpha = next_state_dist * B[:, o]
             norm = alpha.sum()
@@ -189,8 +199,9 @@ def evaluate_hmm(model, id_sequences, k_list=(1, 5, 10)):
             alpha = alpha / norm
 
     perplexity = np.exp(-total_log_prob / total_tokens)
-    topk_acc = {k: hits[k] / n_predictions for k in k_list}
-    return {"perplexity": perplexity, "topk_acc": topk_acc}
+    topk_acc = {k: hits_all[k] / n_predictions for k in k_list}
+    topk_acc_words = {k: hits_words[k] / n_word_predictions for k in k_list}
+    return {"perplexity": perplexity, "topk_acc": topk_acc, "topk_acc_words": topk_acc_words}
 
 
 def main():
@@ -205,6 +216,7 @@ def main():
     data_dir = Path(args.data_dir)
     word2id, id2word = load_vocab(data_dir / "vocab.json")
     vocab_size = len(word2id)
+    punct_ids = punctuation_ids(word2id)
 
     train_sents = load_sentences(data_dir / "train.txt")
     val_sents = load_sentences(data_dir / "val.txt")
@@ -220,10 +232,18 @@ def main():
     train_time = time.time() - start
     print(f"train time: {train_time:.1f}s, converged: {model.monitor_.converged}, iters: {model.monitor_.iter}")
 
-    val_metrics = evaluate_hmm(model, val_ids)
-    test_metrics = evaluate_hmm(model, test_ids)
-    print(f"val:  perplexity={val_metrics['perplexity']:.2f} top-5 acc={val_metrics['topk_acc'][5]:.3%}")
-    print(f"test: perplexity={test_metrics['perplexity']:.2f} top-5 acc={test_metrics['topk_acc'][5]:.3%}")
+    val_metrics = evaluate_hmm(model, val_ids, punct_ids=punct_ids)
+    test_metrics = evaluate_hmm(model, test_ids, punct_ids=punct_ids)
+    print(
+        f"val:  perplexity={val_metrics['perplexity']:.2f} "
+        f"top-5 acc (all)={val_metrics['topk_acc'][5]:.3%} "
+        f"top-5 acc (words only)={val_metrics['topk_acc_words'][5]:.3%}"
+    )
+    print(
+        f"test: perplexity={test_metrics['perplexity']:.2f} "
+        f"top-5 acc (all)={test_metrics['topk_acc'][5]:.3%} "
+        f"top-5 acc (words only)={test_metrics['topk_acc_words'][5]:.3%}"
+    )
 
     models_dir = Path(args.models_dir)
     models_dir.mkdir(parents=True, exist_ok=True)
