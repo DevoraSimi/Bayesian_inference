@@ -1,0 +1,485 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\newcommand{\TODO}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+\title{Bayesian and Neural Approaches to Word-Level Language Modeling:\\
+A Comparative Study on the Sherlock Holmes Corpus}
+\author{Devora Simi}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We study next-word prediction on a corpus of Arthur Conan Doyle's Sherlock
+Holmes novels and short stories as a controlled setting for comparing
+statistical language models that make different commitments to Bayesian
+inference. We implement and evaluate four model families on identical
+train/validation/test splits: (i) an $n$-gram Markov model with Dirichlet
+(additive) smoothing, whose smoothing constant is shown to be exactly the
+Bayes estimator under a Dirichlet prior; (ii) a discrete-emission Hidden
+Markov Model (HMM) fit by maximum-likelihood/MAP Baum-Welch EM, i.e.\ a
+point-estimate latent-variable model; (iii) a fully Bayesian variant of the
+same HMM fit by mean-field Variational Bayes EM (VB-EM), which maintains
+Dirichlet \emph{posterior distributions} over the initial-state,
+transition, and emission parameters rather than point estimates; and (iv)
+an LSTM recurrent neural network language model, used both as a
+point-estimate neural baseline and, via Monte Carlo Dropout, as an
+approximate Bayesian neural model with predictive uncertainty. All models
+are evaluated on held-out perplexity and top-$k$ next-word accuracy, the
+latter reported both over all tokens and restricted to real words (i.e.\
+excluding punctuation tokens). This report documents the problem
+formulation, data pipeline, and modeling/evaluation methodology.
+\emph{Experimental results are not yet included.}
+\end{abstract}
+
+\tableofcontents
+
+% ============================================================
+\section{Problem Statement}
+% ============================================================
+
+The task is \textbf{word-level next-token prediction}: given a prefix of
+tokens $w_1, \dots, w_{t-1}$ from a sentence, predict a distribution over
+the next token $w_t$ from a fixed vocabulary. This is the same underlying
+predictive-text task that powers autocomplete and keyboard-suggestion
+systems, and it is a convenient testbed for a broader question: \emph{how
+much does the choice of Bayesian inference strategy matter for the same
+modeling task and the same data?}
+
+Rather than comparing unrelated model families, we deliberately structure
+the comparison as three points on a single spectrum of how much
+uncertainty a model represents over its own parameters:
+
+\begin{enumerate}
+    \item \textbf{Point estimation with a Bayesian smoothing prior.} The
+    $n$-gram model and the standard HMM both use a Dirichlet prior only to
+    regularize a single point estimate of their parameters (posterior mean
+    or MAP), never propagating parameter uncertainty forward.
+    \item \textbf{Full posterior inference.} The Variational Bayes HMM
+    places the same conjugate Dirichlet priors on the same parameters as
+    the point-estimate HMM, but maintains and updates full posterior
+    distributions over them via mean-field VB-EM, so that predictions
+    integrate over parameter uncertainty rather than plugging in a single
+    value.
+    \item \textbf{Approximate Bayesian deep learning.} The LSTM has no
+    tractable parameter posterior, but Monte Carlo Dropout (Gal and
+    Ghahramani, 2016) is used to approximate Bayesian model averaging over
+    an implicit posterior over its weights, at prediction time.
+\end{enumerate}
+
+Holding the task, data, and evaluation protocol fixed lets us ask, for
+each pair of models, whether the extra machinery of full or approximate
+Bayesian inference actually changes predictive performance (perplexity,
+top-$k$ accuracy) and/or yields useful predictive uncertainty, relative to
+the corresponding point-estimate model.
+
+A secondary, applied framing of the same task is a \textbf{predictive-text
+/ autocomplete demo}: given a typed prefix, suggest the top-$k$ most
+likely next words under each trained model (and, for the RNN, an
+uncertainty estimate per suggestion via MC Dropout).
+
+% ============================================================
+\section{Data}
+% ============================================================
+
+\subsection{Source corpus}
+
+The corpus consists of nine public-domain Arthur Conan Doyle works
+obtained from Project Gutenberg, mixing full novels and short-story
+anthologies:
+
+\begin{itemize}
+    \item \emph{A Study in Scarlet}
+    \item \emph{The Sign of Four}
+    \item \emph{The Adventures of Sherlock Holmes}
+    \item \emph{The Memoirs of Sherlock Holmes}
+    \item \emph{The Hound of the Baskervilles}
+    \item \emph{The Return of Sherlock Holmes}
+    \item \emph{His Last Bow}
+    \item \emph{The Valley of Fear}
+    \item \emph{The Case-Book of Sherlock Holmes}
+\end{itemize}
+
+\subsection{Preprocessing pipeline}
+
+Raw Gutenberg text files are processed by a fixed pipeline
+(\texttt{src/preprocess.py}, \texttt{src/data\_utils.py}) with the
+following stages:
+
+\begin{enumerate}
+    \item \textbf{Boilerplate removal.} Project Gutenberg's
+    \texttt{*** START/END OF ... ***} license markers are stripped from
+    each file.
+
+    \item \textbf{Unit segmentation.} Short-story anthologies are split
+    into individual stories by detecting a ``Contents'' listing and
+    locating each listed title as a heading in the body text (matched
+    fuzzily, tolerating italics/quote markup differences between the
+    listing and the body). Novels, which have a chapter listing rather
+    than a story listing, are kept as a single unit. This yields 60
+    narrative units in total from the 9 source files.
+
+    \item \textbf{Tokenization and sentence splitting.} Text is
+    lower-cased and tokenized into word tokens (letters and apostrophes)
+    and punctuation tokens (\texttt{.\,,\,!\,?\,;\,:\,---\,``\,''\,(\,)})
+    kept as separate vocabulary entries; text is split into sentences on
+    sentence-final punctuation. Sentences shorter than 2 tokens are
+    dropped.
+
+    \item \textbf{Leak-free splitting.} Train/validation/test splits are
+    assigned at the level of whole narrative units (books/stories), not
+    individual sentences, so that no story contributes sentences to more
+    than one split. Units are shuffled with a fixed seed and greedily
+    assigned to test, then validation, then train, until each split's
+    target token budget (10\% test, 10\% validation by default) is met.
+
+    \item \textbf{Vocabulary construction.} A vocabulary of the
+    \texttt{vocab\_size} most frequent tokens is built \emph{from the
+    training split only}, plus two reserved tokens: \texttt{<unk>} for
+    out-of-vocabulary tokens and \texttt{<eos>} for sentence boundaries
+    (used to delimit sequences for the RNN's streaming input).
+\end{enumerate}
+
+\subsection{Split statistics}
+
+For the primary configuration (\texttt{data/processed}, vocabulary size
+15{,}000):
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrr}
+\toprule
+Split & Narrative units & Sentences & Tokens \\
+\midrule
+Train & 47 & 26{,}081 & 563{,}864 \\
+Validation & 5 & 4{,}597 & 108{,}770 \\
+Test & 8 & 5{,}315 & 114{,}939 \\
+\bottomrule
+\end{tabular}
+\caption{Split sizes for the primary preprocessing run (60 total narrative
+units, vocabulary size 15{,}000).}
+\end{table}
+
+A second configuration (\texttt{data/processed\_vocab5000}) preprocesses
+the same corpus with a smaller vocabulary (5{,}000 tokens), used to study
+sensitivity of the model comparison to vocabulary size / out-of-vocabulary
+rate.
+
+% ============================================================
+\section{Models}
+% ============================================================
+
+All four model families are trained and evaluated on the same encoded
+sentences (or, for the RNN, the same token stream) and share the same
+notion of ``vocabulary,'' so their outputs are directly comparable.
+
+\subsection{$n$-gram model with Dirichlet smoothing}
+
+An order-$n$ Markov model estimates
+\[
+P(w_t \mid w_{t-n+1}, \dots, w_{t-1})
+\]
+from co-occurrence counts of each context and following word. Rather than
+using raw maximum-likelihood counts (which assign zero probability to
+unseen context/word pairs), the model uses additive (Dirichlet) smoothing
+with concentration $\alpha$:
+\[
+P(w \mid \text{context}) = \frac{\text{count}(\text{context}, w) +
+\alpha}{\text{count}(\text{context}) + \alpha V}, \qquad V = |\text{vocab}|.
+\]
+This is not merely a heuristic: it is exactly the posterior \emph{mean} of
+a $\text{Dirichlet}(\alpha)$ prior placed over the categorical
+distribution of ``next word given this context,'' and by
+Dirichlet-multinomial conjugacy the posterior mean is also exactly the
+Bayesian posterior-predictive probability for a single next draw. The
+model is thus a genuine (if simple) Bayes estimator, using the same
+conjugate-prior idea that underlies the HMM's smoothing below, applied
+directly to $n$-gram counts. Implemented in \texttt{src/ngram.py}.
+
+\textbf{Hyperparameters explored:} order $n$ (context length) and the
+smoothing concentration $\alpha$.
+
+\subsection{Hidden Markov Model (point estimate)}
+
+A discrete-emission (categorical) HMM with $N$ latent states models a
+sentence as a Markov chain of unobserved states
+$z_1, \dots, z_T$ that emit the observed word sequence
+$w_1, \dots, w_T$, parameterized by:
+\begin{itemize}
+    \item initial-state distribution $\pi \in \Delta^{N-1}$,
+    \item transition matrix $A \in \mathbb{R}^{N \times N}$ (row-stochastic),
+    \item emission matrix $B \in \mathbb{R}^{N \times V}$ (row-stochastic).
+\end{itemize}
+Parameters are fit by Baum-Welch (EM): the E-step computes state
+posteriors $\gamma_t(i) = P(z_t = i \mid w_{1:T})$ and pairwise transition
+posteriors via the scaled forward-backward algorithm; the M-step
+re-estimates $\pi, A, B$ from these expected sufficient statistics, with a
+small additive (Dirichlet-style) smoothing constant added to every count
+to avoid degenerate zero probabilities. This yields \emph{point} (MAP)
+estimates of $\pi, A, B$ -- a single number per parameter, with no
+representation of estimation uncertainty. Training terminates on an
+iteration cap or when the total data log-likelihood changes by less than
+a tolerance. Implemented from scratch in \texttt{src/hmm.py} (exposing the
+same attribute names as \texttt{hmmlearn} for interchangeability with the
+Bayesian variant below).
+
+\textbf{Hyperparameters explored:} number of latent states $N$.
+
+\subsection{Variational Bayes HMM (full posterior)}
+
+The Variational Bayes HMM (\texttt{src/vb\_hmm.py}) uses the identical
+generative model as the point-estimate HMM above, but places explicit
+Dirichlet priors on $\pi$, each row of $A$, and each row of $B$, and fits
+the model by mean-field Variational Bayes EM (VB-EM) rather than plain
+EM. Instead of point estimates, the model maintains Dirichlet
+\emph{posterior} concentration parameters for each of $\pi, A, B$. The
+E-step's forward-backward recursion plugs in the expected
+log-probabilities under the current posterior,
+\[
+\widetilde{\theta} = \exp\big(\psi(\alpha) - \psi(\textstyle\sum_j \alpha_j)\big),
+\]
+where $\psi$ is the digamma function, rather than a point-estimate
+probability -- the standard mean-field update for conjugate-exponential
+models (Beal, 2003; Bishop, 2006, Ch.\ 10). By Jensen's inequality this
+quantity is always $\le$ the naive ratio $\alpha_i / \sum_j \alpha_j$, a
+``Bayesian shrinkage'' effect that makes VB-EM inherently more
+conservative than MAP-EM about rare states and rare emissions. The M-step
+is a conjugate update: each posterior is simply the prior plus expected
+sufficient statistics, with no separate normalization needed. The
+digamma function is implemented from scratch (shift-up recurrence plus
+asymptotic expansion) to keep the model dependency-free.
+
+The fitted model exposes \texttt{startprob\_}, \texttt{transmat\_}, and
+\texttt{emissionprob\_} as the \emph{posterior mean} of each Dirichlet
+(again, by conjugacy, exactly the Bayesian posterior-predictive
+distribution for one more draw), making it a drop-in replacement for the
+point-estimate HMM in every downstream evaluation and demo function. This
+lets the study directly compare MAP-EM vs.\ VB-EM \emph{at matching
+numbers of latent states}, isolating the effect of full posterior
+inference from any confound of model capacity.
+
+\textbf{Hyperparameters explored:} number of latent states $N$ (matched to
+the point-estimate HMM sweep); Dirichlet prior concentrations
+$\alpha_0, \beta_0, \pi_0$ for the transition, emission, and initial-state
+priors.
+
+\subsection{LSTM recurrent neural network}
+
+A standard single-/multi-layer LSTM language model
+(\texttt{src/rnn.py}): a learned word embedding feeds an LSTM, whose
+hidden state at each position is projected by a linear decoder to logits
+over the vocabulary, trained with cross-entropy loss via Adam, gradient
+clipping, dropout regularization, and truncated backpropagation through
+time (BPTT) over sentences concatenated into a single token stream
+(delimited by \texttt{<eos>}). This is a point-estimate neural baseline:
+a single set of network weights, no distribution over weights.
+
+\textbf{Hyperparameters explored (grid sweep,
+\texttt{src/experiment.py}):} hidden size, number of layers, dropout
+rate; training uses early stopping on validation perplexity (patience-based),
+restoring the best epoch's weights before final evaluation.
+
+\textbf{Hyperparameter search (\texttt{src/tune\_rnn.py}):} embedding
+size, dropout, and learning rate are additionally tuned with Optuna's
+Tree-structured Parzen Estimator (TPE) sampler, at a \emph{fixed}
+representative hidden size/layer count (searching architecture size
+jointly would make the winning embedding size/dropout/learning rate only
+valid for the specific architecture they happened to be paired with in a
+given trial, which would not transfer safely to the separate
+hidden-size/layer sweep above). The best configuration found is then
+retrained for a longer budget with early stopping and full history
+logging.
+
+\subsubsection{Monte Carlo Dropout: approximate Bayesian inference}
+
+Because the LSTM's exact weight posterior is intractable, we use Monte
+Carlo Dropout (Gal and Ghahramani, 2016) as an approximate Bayesian
+neural model. At prediction/evaluation time, dropout is kept
+\emph{active} (rather than disabled, as is standard at test time), and
+$M$ independent stochastic forward passes are run on the same input, each
+with an independently sampled dropout mask. Averaging the resulting
+softmax distributions approximates Bayesian model averaging over an
+implicit posterior over the network's weights; the standard deviation
+across samples for each candidate word gives an approximate predictive
+uncertainty unavailable from a single deterministic forward pass. This is
+used two ways:
+\begin{itemize}
+    \item \textbf{Demo-time uncertainty} (\texttt{predict\_demo.py}): top-$k$
+    next-word suggestions annotated with a mean probability and standard
+    deviation across MC samples.
+    \item \textbf{Re-scored evaluation} (\texttt{evaluate\_rnn\_mc\_dropout},
+    used in the sweep): perplexity and top-$k$ accuracy recomputed with MC
+    Dropout averaging, to test whether Bayesian model averaging changes
+    point predictive performance (not just uncertainty), and how many
+    stochastic passes are needed before the averaged prediction stops
+    changing.
+\end{itemize}
+Perplexity under MC Dropout is computed as $-\log$ of the \emph{mean}
+predictive probability at the true token (the mathematically correct way
+to score a Bayesian model average), not as the mean of each sample's
+log-probability.
+
+% ============================================================
+\section{Evaluation Protocol}
+% ============================================================
+
+All four model families are scored with the same two metrics
+(\texttt{src/evaluation.py}), computed identically (up to each model's
+own notion of ``predict from the prefix seen so far'') across models:
+
+\begin{itemize}
+    \item \textbf{Perplexity:} $\exp\!\big(-\tfrac{1}{T}\sum_t \log
+    P(w_t \mid w_{<t})\big)$ over all tokens in the evaluation split,
+    including each sequence's first token (predicted from an empty/short
+    context -- the $n$-gram model's shortest-available context, or the
+    HMM's initial-state distribution).
+    \item \textbf{Top-$k$ accuracy}, $k \in \{1, 5, 10\}$: whether the
+    true next token is among the model's $k$ highest-probability
+    predictions, computed incrementally (predict, then reveal the true
+    token and update state) and \textbf{not} scored on each sequence's
+    first token (no prior context to predict from).
+\end{itemize}
+
+Because punctuation tokens are highly predictable from local context (and
+would inflate accuracy for any model that learns punctuation patterns
+well), top-$k$ accuracy is reported \textbf{twice}: once over all tokens,
+and once restricted to positions whose true next token is a real word
+(i.e.\ excluding the punctuation subset of the vocabulary). The
+words-only variant is the more meaningful measure of actual next-word
+prediction quality.
+
+All models are evaluated on the same validation and held-out test
+splits described in Section~2.
+
+% ============================================================
+\section{Experimental Design}
+% ============================================================
+
+\texttt{src/experiment.py} runs a grid sweep over all four model
+families on identical data splits, saving a checkpoint (model
+weights/parameters, training config, and validation/test metrics) per
+configuration for reproducibility:
+
+\begin{itemize}
+    \item \textbf{$n$-gram:} grid over order $\times$ smoothing $\alpha$.
+    \item \textbf{HMM and VB-HMM:} grid over number of latent states,
+    with the \emph{same} state-count grid used for both, enabling a
+    direct MAP-EM vs.\ VB-EM comparison at matched capacity; VB-HMM prior
+    concentrations held fixed.
+    \item \textbf{LSTM:} grid over hidden size $\times$ number of layers
+    $\times$ dropout, each trained with early stopping on validation
+    perplexity; optionally, each trained configuration is additionally
+    re-evaluated with MC Dropout at several sample counts to study
+    convergence of the Bayesian model average.
+\end{itemize}
+
+Separately, \texttt{src/tune\_rnn.py} runs an Optuna TPE search over
+embedding size, dropout, and learning rate at a fixed architecture size,
+then retrains the best configuration with a longer budget and early
+stopping.
+
+Every configuration of every model is evaluated with the identical
+protocol of Section~4 on the identical held-out test split, so that
+perplexity and top-$k$ accuracy are directly comparable model-to-model
+and not just within a model family.
+
+% ============================================================
+\section{Results}
+% ============================================================
+
+\TODO{This section will report, once experiments are finalized: (1) a
+comparison table of best validation/test perplexity and top-1/top-5
+accuracy (all-tokens and words-only) per model family, matching the
+fields already logged to \texttt{results/comparison.csv}; (2)
+per-family sweep plots -- perplexity vs.\ number of states (HMM,
+VB-HMM), vs.\ order (n-gram, by $\alpha$), and vs.\ hidden size (RNN, by
+layers/dropout); (3) the MC-Dropout sample-count convergence plot; (4)
+the Optuna search plot and best hyperparameters found
+(\texttt{results/optuna\_trials.csv}, \texttt{results/optuna\_search.png}); and
+(5) a head-to-head summary figure of best-configuration perplexity and
+accuracy across all four model families.}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrrr}
+\toprule
+Model & Config & Val.\ PPL & Test PPL & Top-1 acc.\ (words) & Top-5 acc.\ (words) \\
+\midrule
+$n$-gram & \TODO{best (order, $\alpha$)} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+HMM & \TODO{best $N$} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+VB-HMM & \TODO{best $N$} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+LSTM & \TODO{best config} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+LSTM + MC Dropout & \TODO{best config} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+\bottomrule
+\end{tabular}
+\caption{\TODO{Best-configuration comparison across model families
+(to be filled in from \texttt{results/comparison.csv}).}}
+\end{table}
+
+% \begin{figure}[h]
+%   \centering
+%   \includegraphics[width=0.8\textwidth]{figures/summary_comparison.png}
+%   \caption{\TODO{Best test perplexity and words-only top-5 accuracy per model family.}}
+% \end{figure}
+
+% ============================================================
+\section{Discussion and Conclusion}
+% ============================================================
+
+\TODO{To be written once results are available. This section should
+address, at minimum: whether full-posterior VB-EM outperforms
+point-estimate MAP-EM for the HMM at matched state counts (and whether
+any gap narrows or widens with fewer latent states, where the
+Bayesian-shrinkage effect of VB-EM should matter most); whether MC
+Dropout changes the LSTM's point predictive performance or only adds
+uncertainty estimates; and how the two Bayesian latent-variable models
+(n-gram, HMM family) compare to the LSTM in the perplexity/accuracy
+vs.\ model-complexity trade-off.}
+
+% ============================================================
+\begin{thebibliography}{9}
+
+\bibitem{rabiner1989}
+L.~R. Rabiner.
+\newblock A tutorial on hidden Markov models and selected applications in speech recognition.
+\newblock \emph{Proceedings of the IEEE}, 77(2):257--286, 1989.
+
+\bibitem{beal2003}
+M.~J. Beal.
+\newblock \emph{Variational Algorithms for Approximate Bayesian Inference}.
+\newblock PhD thesis, University College London, 2003.
+
+\bibitem{bishop2006}
+C.~M. Bishop.
+\newblock \emph{Pattern Recognition and Machine Learning}.
+\newblock Springer, 2006. Chapter 10: Approximate Inference.
+
+\bibitem{gal2016}
+Y.~Gal and Z.~Ghahramani.
+\newblock Dropout as a Bayesian approximation: Representing model uncertainty in deep learning.
+\newblock In \emph{Proceedings of the 33rd International Conference on Machine Learning (ICML)}, 2016.
+
+\bibitem{akiba2019}
+T.~Akiba, S.~Sano, T.~Yanase, T.~Ohta, and M.~Koyama.
+\newblock Optuna: A next-generation hyperparameter optimization framework.
+\newblock In \emph{Proceedings of the 25th ACM SIGKDD International Conference on Knowledge Discovery \& Data Mining}, 2019.
+
+\bibitem{doyle}
+A.~C. Doyle.
+\newblock Sherlock Holmes works.
+\newblock Project Gutenberg, \url{https://www.gutenberg.org/}.
+
+\end{thebibliography}
+
+\end{document}

@@ -177,13 +177,13 @@ def main():
     save_sentences(test, out_dir / "test.txt")
 
     unk_id = word2id["<unk>"]
-    train_ids = encode_sentences(train, word2id)
-    unk_count = sum(tok == unk_id for sent in train_ids for tok in sent)
-    total_count = sum(len(sent) for sent in train_ids)
-
     print(f"sentences: train={len(train)} val={len(val)} test={len(test)}")
     print(f"vocab size: {len(word2id)}")
-    print(f"train tokens: {total_count}, unk rate: {unk_count / total_count:.3%}")
+    for split_name, sentences in (("train", train), ("val", val), ("test", test)):
+        ids = encode_sentences(sentences, word2id)
+        total = sum(len(sent) for sent in ids)
+        unk = sum(tok == unk_id for sent in ids for tok in sent)
+        print(f"{split_name} tokens: {total}, unk rate: {unk / total:.3%}")
 
 
 if __name__ == "__main__":

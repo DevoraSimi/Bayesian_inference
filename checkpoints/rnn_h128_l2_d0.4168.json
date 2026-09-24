@@ -1,0 +1,225 @@
+{
+  "config": {
+    "model_type": "RNN",
+    "vocab_size": 15000,
+    "embed_size": 64,
+    "hidden_size": 128,
+    "num_layers": 2,
+    "dropout": 0.4168,
+    "bptt": 30,
+    "epochs": 30,
+    "best_epoch": 20,
+    "early_stopped": true,
+    "patience": 5,
+    "lr": 0.0017,
+    "seed": 42,
+    "train_time_s": 46.4
+  },
+  "metrics": {
+    "val": {
+      "perplexity": 88.07250213623047,
+      "topk_acc": {
+        "1": 0.2341715193223928,
+        "5": 0.45375860243515087,
+        "10": 0.5498411858125992
+      },
+      "topk_acc_words": {
+        "1": 0.18349617737791854,
+        "5": 0.37811458580522683,
+        "10": 0.4848591149675516
+      }
+    },
+    "test": {
+      "perplexity": 92.49441528320312,
+      "topk_acc": {
+        "1": 0.2341956413242389,
+        "5": 0.45276992181001496,
+        "10": 0.5476127100316087
+      },
+      "topk_acc_words": {
+        "1": 0.18575848381070983,
+        "5": 0.37709176525529264,
+        "10": 0.48242917185554174
+      }
+    }
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 5.863348180200996,
+      "val_perplexity": 169.28314208984375,
+      "val_top5_acc": 0.36263455090877006,
+      "val_top5_acc_words": 0.27671450532897246
+    },
+    {
+      "epoch": 2,
+      "train_loss": 5.166753917690215,
+      "val_perplexity": 130.8428192138672,
+      "val_top5_acc": 0.39319745897300157,
+      "val_top5_acc_words": 0.30993675391805864
+    },
+    {
+      "epoch": 3,
+      "train_loss": 4.9697714869568985,
+      "val_perplexity": 115.59172821044922,
+      "val_top5_acc": 0.40832892182812774,
+      "val_top5_acc_words": 0.3271256564489337
+    },
+    {
+      "epoch": 4,
+      "train_loss": 4.848287407944842,
+      "val_perplexity": 106.8449935913086,
+      "val_top5_acc": 0.41634021528145404,
+      "val_top5_acc_words": 0.3358026474624186
+    },
+    {
+      "epoch": 5,
+      "train_loss": 4.760847012686535,
+      "val_perplexity": 101.40559387207031,
+      "val_top5_acc": 0.4232839244750309,
+      "val_top5_acc_words": 0.34297328807403815
+    },
+    {
+      "epoch": 6,
+      "train_loss": 4.693867829757008,
+      "val_perplexity": 97.7706527709961,
+      "val_top5_acc": 0.4290100582318687,
+      "val_top5_acc_words": 0.34947329323277243
+    },
+    {
+      "epoch": 7,
+      "train_loss": 4.6374164034680625,
+      "val_perplexity": 95.53244018554688,
+      "val_top5_acc": 0.43249514734427386,
+      "val_top5_acc_words": 0.35306377227283514
+    },
+    {
+      "epoch": 8,
+      "train_loss": 4.591305249105624,
+      "val_perplexity": 93.5910415649414,
+      "val_top5_acc": 0.4349302982177519,
+      "val_top5_acc_words": 0.35628282244668447
+    },
+    {
+      "epoch": 9,
+      "train_loss": 4.550895290161536,
+      "val_perplexity": 92.16263580322266,
+      "val_top5_acc": 0.43851244044467974,
+      "val_top5_acc_words": 0.3598010792072057
+    },
+    {
+      "epoch": 10,
+      "train_loss": 4.515669468941727,
+      "val_perplexity": 91.21260833740234,
+      "val_top5_acc": 0.44047114875595555,
+      "val_top5_acc_words": 0.3632987010307151
+    },
+    {
+      "epoch": 11,
+      "train_loss": 4.482626404219527,
+      "val_perplexity": 90.23419952392578,
+      "val_top5_acc": 0.44231515793188636,
+      "val_top5_acc_words": 0.36512489295626427
+    },
+    {
+      "epoch": 12,
+      "train_loss": 4.454098977209107,
+      "val_perplexity": 89.68504333496094,
+      "val_top5_acc": 0.4448208928886536,
+      "val_top5_acc_words": 0.36798283173240615
+    },
+    {
+      "epoch": 13,
+      "train_loss": 4.427876647894944,
+      "val_perplexity": 89.25589752197266,
+      "val_top5_acc": 0.4465766719604729,
+      "val_top5_acc_words": 0.369994738091062
+    },
+    {
+      "epoch": 14,
+      "train_loss": 4.4044758125049315,
+      "val_perplexity": 88.90313720703125,
+      "val_top5_acc": 0.4480589377095465,
+      "val_top5_acc_words": 0.3714288662133859
+    },
+    {
+      "epoch": 15,
+      "train_loss": 4.3858643101482855,
+      "val_perplexity": 88.55577087402344,
+      "val_top5_acc": 0.44930298217751896,
+      "val_top5_acc_words": 0.37277013711915646
+    },
+    {
+      "epoch": 16,
+      "train_loss": 4.362156816614353,
+      "val_perplexity": 88.51722717285156,
+      "val_top5_acc": 0.44943532733368624,
+      "val_top5_acc_words": 0.3731931533278995
+    },
+    {
+      "epoch": 17,
+      "train_loss": 4.34532766347009,
+      "val_perplexity": 88.3734130859375,
+      "val_top5_acc": 0.4506617257808364,
+      "val_top5_acc_words": 0.3748439482888479
+    },
+    {
+      "epoch": 18,
+      "train_loss": 4.3271866968976775,
+      "val_perplexity": 88.45478057861328,
+      "val_top5_acc": 0.4519763543320981,
+      "val_top5_acc_words": 0.37638125109623105
+    },
+    {
+      "epoch": 19,
+      "train_loss": 4.310341500654453,
+      "val_perplexity": 88.39979553222656,
+      "val_top5_acc": 0.45272631021704607,
+      "val_top5_acc_words": 0.3772066485767052
+    },
+    {
+      "epoch": 20,
+      "train_loss": 4.297194821320899,
+      "val_perplexity": 88.07250213623047,
+      "val_top5_acc": 0.45375860243515087,
+      "val_top5_acc_words": 0.37811458580522683
+    },
+    {
+      "epoch": 21,
+      "train_loss": 4.2833860674040105,
+      "val_perplexity": 88.4172134399414,
+      "val_top5_acc": 0.454693841538733,
+      "val_top5_acc_words": 0.3795590313960567
+    },
+    {
+      "epoch": 22,
+      "train_loss": 4.2710541234753,
+      "val_perplexity": 88.75763702392578,
+      "val_top5_acc": 0.4547908946532557,
+      "val_top5_acc_words": 0.37935268202593814
+    },
+    {
+      "epoch": 23,
+      "train_loss": 4.25792708532597,
+      "val_perplexity": 88.69341278076172,
+      "val_top5_acc": 0.45554085053820365,
+      "val_top5_acc_words": 0.3803741114080249
+    },
+    {
+      "epoch": 24,
+      "train_loss": 4.2468099887293524,
+      "val_perplexity": 88.96118927001953,
+      "val_top5_acc": 0.4556820187047821,
+      "val_top5_acc_words": 0.3800439524158353
+    },
+    {
+      "epoch": 25,
+      "train_loss": 4.233793675899506,
+      "val_perplexity": 88.91793060302734,
+      "val_top5_acc": 0.4557526027880713,
+      "val_top5_acc_words": 0.38065268305768496
+    }
+  ],
+  "val_history": [],
+  "timestamp": "2026-09-23 17:28:29"
+}

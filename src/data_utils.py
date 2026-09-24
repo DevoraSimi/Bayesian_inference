@@ -78,6 +78,19 @@ def encode_sentences(sentences, word2id):
     return [encode_sentence(sent, word2id) for sent in sentences]
 
 
+def load_split_ids(data_dir):
+    """Loads vocab.json plus train/val/test.txt from a preprocess.py output
+    directory and encodes each split to word-id sequences. Shared by every
+    training/experiment script so the load-and-encode boilerplate lives in
+    exactly one place."""
+    data_dir = Path(data_dir)
+    word2id, id2word = load_vocab(data_dir / "vocab.json")
+    train_ids = encode_sentences(load_sentences(data_dir / "train.txt"), word2id)
+    val_ids = encode_sentences(load_sentences(data_dir / "val.txt"), word2id)
+    test_ids = encode_sentences(load_sentences(data_dir / "test.txt"), word2id)
+    return word2id, id2word, train_ids, val_ids, test_ids
+
+
 def split_books(book_sentences, val_frac=0.1, test_frac=0.1, seed=42):
     """Assign whole books/stories to train/val/test so no story's sentences
     leak across splits. Units are shuffled, then greedily filled into test,
