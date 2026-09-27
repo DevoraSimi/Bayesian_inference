@@ -5,13 +5,13 @@ from pathlib import Path
 import torch
 
 from checkpoints import load_pickle_checkpoint, load_rnn_checkpoint
-from data_utils import encode_sentence, load_vocab, tokenize
+from data_utils import EOS, UNK, encode_sentence, load_vocab, punctuation_ids, tokenize
 from hmm import suggest_next_words as hmm_suggest
 from ngram import suggest_next_words as ngram_suggest
 from rnn import mc_dropout_predict, suggest_next_words as rnn_suggest
 
 
-def print_suggestions(prefix, word2id, id2word, models, device, k, mc_samples):
+def print_suggestions(prefix, word2id, id2word, models, device, k, mc_samples, exclude_ids):
     tokens = tokenize(prefix)
     if not tokens:
         print("(empty prefix, skipping)")
@@ -20,15 +20,15 @@ def print_suggestions(prefix, word2id, id2word, models, device, k, mc_samples):
 
     print(f"\nprefix: {prefix!r}")
     if models.get("hmm") is not None:
-        print(f"  HMM:    {hmm_suggest(models['hmm'], ids, id2word, k)}")
+        print(f"  HMM:    {hmm_suggest(models['hmm'], ids, id2word, k, exclude_ids)}")
     if models.get("vbhmm") is not None:
-        print(f"  VB-HMM: {hmm_suggest(models['vbhmm'], ids, id2word, k)}")
+        print(f"  VB-HMM: {hmm_suggest(models['vbhmm'], ids, id2word, k, exclude_ids)}")
     if models.get("ngram") is not None:
-        print(f"  Ngram:  {ngram_suggest(models['ngram'], ids, id2word, k)}")
+        print(f"  Ngram:  {ngram_suggest(models['ngram'], ids, id2word, k, exclude_ids)}")
     if models.get("rnn") is not None:
-        print(f"  RNN:    {rnn_suggest(models['rnn'], word2id, id2word, prefix, device, k)}")
+        print(f"  RNN:    {rnn_suggest(models['rnn'], word2id, id2word, prefix, device, k, exclude_ids)}")
         if mc_samples:
-            mc = mc_dropout_predict(models["rnn"], word2id, id2word, prefix, device, k, mc_samples)
+            mc = mc_dropout_predict(models["rnn"], word2id, id2word, prefix, device, k, mc_samples, exclude_ids)
             formatted = ", ".join(f"{w} (p={p:.3f} +/-{s:.3f})" for w, p, s in mc)
             print(f"  RNN MC-Dropout ({mc_samples} samples): {formatted}")
 
@@ -45,6 +45,8 @@ def main():
         "--mc-dropout", type=int, default=0, metavar="N_SAMPLES",
         help="if set (with --rnn-checkpoint), also show MC-Dropout uncertainty using N_SAMPLES stochastic passes",
     )
+    parser.add_argument("--no-punct", action="store_true",
+                        help="suggest words only, hiding punctuation tokens (<unk>/<eos> are always hidden)")
     parser.add_argument("--text", default=None, help="single prefix; if omitted, reads lines from stdin")
     args = parser.parse_args()
 
@@ -57,6 +59,10 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     data_dir = Path(args.data_dir)
     word2id, id2word = load_vocab(data_dir / "vocab.json")
+    # <unk>/<eos> are never useful suggestions; punctuation optionally
+    exclude_ids = {word2id[UNK], word2id[EOS]}
+    if args.no_punct:
+        exclude_ids |= punctuation_ids(word2id)
 
     models = {}
     if args.hmm_checkpoint:
@@ -69,7 +75,7 @@ def main():
         models["rnn"], _ = load_rnn_checkpoint(args.rnn_checkpoint, device)
 
     if args.text is not None:
-        print_suggestions(args.text, word2id, id2word, models, device, args.k, args.mc_dropout)
+        print_suggestions(args.text, word2id, id2word, models, device, args.k, args.mc_dropout, exclude_ids)
         return
 
     print("enter a text prefix (Ctrl-D to quit):")
@@ -77,7 +83,7 @@ def main():
         line = line.rstrip("\n")
         if not line:
             continue
-        print_suggestions(line, word2id, id2word, models, device, args.k, args.mc_dropout)
+        print_suggestions(line, word2id, id2word, models, device, args.k, args.mc_dropout, exclude_ids)
 
 
 if __name__ == "__main__":

@@ -95,86 +95,96 @@ uncertainty estimate per suggestion via MC Dropout).
 
 \subsection{Source corpus}
 
-The corpus consists of nine public-domain Arthur Conan Doyle works
-obtained from Project Gutenberg, mixing full novels and short-story
-anthologies:
+The corpus is the complete Sherlock Holmes canon by Arthur Conan Doyle: nine public-domain works obtained from Project Gutenberg~\cite{doyle}, consisting of four novels and five short-story anthologies.
 
 \begin{itemize}
-    \item \emph{A Study in Scarlet}
-    \item \emph{The Sign of Four}
-    \item \emph{The Adventures of Sherlock Holmes}
-    \item \emph{The Memoirs of Sherlock Holmes}
-    \item \emph{The Hound of the Baskervilles}
-    \item \emph{The Return of Sherlock Holmes}
-    \item \emph{His Last Bow}
-    \item \emph{The Valley of Fear}
-    \item \emph{The Case-Book of Sherlock Holmes}
+    \item Novels: {A Study in Scarlet}, {The Sign of Four},
+    {The Hound of the Baskervilles}, {The Valley of Fear}.
+    \item Anthologies: {The Adventures of Sherlock Holmes},
+    {The Memoirs of Sherlock Holmes}, {The Return of Sherlock
+    Holmes}, {His Last Bow}, {The Case-Book of Sherlock Holmes}.
 \end{itemize}
 
 \subsection{Preprocessing pipeline}
 
-Raw Gutenberg text files are processed by a fixed pipeline
-(\texttt{src/preprocess.py}, \texttt{src/data\_utils.py}) with the
-following stages:
+Preprocessing (\texttt{src/preprocess.py}, \texttt{src/data\_utils.py})
+follows the WikiText benchmark conventions~\cite{merity2016}, which use
+the Moses tokenizer~\cite{koehn2007}:
 
 \begin{enumerate}
-    \item \textbf{Boilerplate removal.} Project Gutenberg's
-    \texttt{*** START/END OF ... ***} license markers are stripped from
-    each file.
+    \item \textbf{Boilerplate removal.} Project Gutenberg license headers
+    and footers are stripped.
 
-    \item \textbf{Unit segmentation.} Short-story anthologies are split
-    into individual stories by detecting a ``Contents'' listing and
-    locating each listed title as a heading in the body text (matched
-    fuzzily, tolerating italics/quote markup differences between the
-    listing and the body). Novels, which have a chapter listing rather
-    than a story listing, are kept as a single unit. This yields 60
-    narrative units in total from the 9 source files.
+    \item \textbf{Unit segmentation.} Anthologies are split into stories
+    by locating each title from the ``Contents'' listing in the body text;
+    novels stay whole. This gives 60 units: 56 stories and 4 novels.
 
-    \item \textbf{Tokenization and sentence splitting.} Text is
-    lower-cased and tokenized into word tokens (letters and apostrophes)
-    and punctuation tokens (\texttt{.\,,\,!\,?\,;\,:\,---\,``\,''\,(\,)})
-    kept as separate vocabulary entries; text is split into sentences on
-    sentence-final punctuation. Sentences shorter than 2 tokens are
-    dropped.
+    \item \textbf{Paragraphs.} Each sequence is one paragraph (text
+    between blank lines), ending with \texttt{<eos>}; there is no sentence
+    splitting.
 
-    \item \textbf{Leak-free splitting.} Train/validation/test splits are
-    assigned at the level of whole narrative units (books/stories), not
-    individual sentences, so that no story contributes sentences to more
-    than one split. Units are shuffled with a fixed seed and greedily
-    assigned to test, then validation, then train, until each split's
-    target token budget (10\% test, 10\% validation by default) is met.
+    \item \textbf{Heading removal.} Titles, chapter headings, contents
+    listings and bylines are dropped (WikiText keeps section titles; here
+    they are layout, not content).
 
-    \item \textbf{Vocabulary construction.} A vocabulary of the
-    \texttt{vocab\_size} most frequent tokens is built \emph{from the
-    training split only}, plus two reserved tokens: \texttt{<unk>} for
-    out-of-vocabulary tokens and \texttt{<eos>} for sentence boundaries
-    (used to delimit sequences for the RNN's streaming input).
+    \item \textbf{Normalization.} Variants of the same symbol are unified
+    (e.g., curly/straight quotes).
+
+    \item \textbf{Tokenization.} Case is kept, every punctuation mark is a
+    token, and numbers are kept. Clitics are split (\texttt{don 't},
+    \texttt{Holmes 's}), inner hyphens and number separators become markers
+    (\texttt{well @-@ known}, \texttt{1 @,@ 000}), and title abbreviations
+    stay whole (\texttt{Mr.}, \texttt{Dr.}).
+
+    \item \textbf{Leak-free splitting.} Whole units are assigned to splits,
+    so no story appears in two splits. Units are shuffled and
+    filled into test, validation, then train, until each reaches its token
+    target (10\%, 10\%, rest).
+
+    \item \textbf{Vocabulary.} Built from the training split only: every
+    token seen at least twice (WikiText uses three; this corpus is smaller so we used two), plus \texttt{<unk>} and
+    \texttt{<eos>}.
 \end{enumerate}
 
 \subsection{Split statistics}
 
-For the primary configuration (\texttt{data/processed}, vocabulary size
-15{,}000):
+The training split contains 17{,}859 distinct token types, of which
+11{,}106 occur at least twice; together with \texttt{<unk>} and
+\texttt{<eos>} this gives a vocabulary of 11{,}108 entries, covering
+98.8\% of training tokens (Table~\ref{tab:splits}). The out-of-vocabulary
+rate is higher on the validation and test splits because they consist of
+stories unseen in training, with their own character names and rare words.
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lrrr}
+\begin{tabular}{lrrrr}
 \toprule
-Split & Narrative units & Sentences & Tokens \\
+Split & Narrative units & Paragraphs & Tokens & \texttt{<unk>} rate \\
 \midrule
-Train & 47 & 26{,}081 & 563{,}864 \\
-Validation & 5 & 4{,}597 & 108{,}770 \\
-Test & 8 & 5{,}315 & 114{,}939 \\
+Training & 47 & 11{,}208 & 583{,}089 & 1.16\% \\
+Validation & 5 & 2{,}134 & 111{,}826 & 3.13\% \\
+Test & 8 & 2{,}077 & 118{,}608 & 3.53\% \\
 \bottomrule
 \end{tabular}
-\caption{Split sizes for the primary preprocessing run (60 total narrative
-units, vocabulary size 15{,}000).}
+\caption{Split sizes (60 narrative units in total; vocabulary of 11{,}108
+entries, minimum training count 2).}
+\label{tab:splits}
 \end{table}
 
-A second configuration (\texttt{data/processed\_vocab5000}) preprocesses
-the same corpus with a smaller vocabulary (5{,}000 tokens), used to study
-sensitivity of the model comparison to vocabulary size / out-of-vocabulary
-rate.
+Test and validation units are listed below; all others are used for training:
+\begin{itemize}
+    \item \textbf{Test (8):} {A Study in Scarlet} (novel); from
+    {Adventures}: The Copper Beeches; from {Memoirs}: The Reigate
+    Squires; from {Return}: The Abbey Grange, The Missing
+    Three-Quarter; from {Case-Book}: The Lion's Mane, The Retired
+    Colourman, The Sussex Vampire.
+    \item \textbf{Validation (5):} {The Hound of the Baskervilles}
+    (novel); from {Adventures}: The Noble Bachelor; from
+    {Memoirs}: The Cardboard Box, The ``Gloria Scott''; from
+    {Case-Book}: The Creeping Man.
+\end{itemize}
+
+Paragraph lengths vary widely: the median paragraph has 29 tokens, the longest 710.
 
 % ============================================================
 \section{Models}
@@ -477,8 +487,23 @@ T.~Akiba, S.~Sano, T.~Yanase, T.~Ohta, and M.~Koyama.
 
 \bibitem{doyle}
 A.~C. Doyle.
-\newblock Sherlock Holmes works.
+\newblock The Sherlock Holmes canon: \emph{A Study in Scarlet}, \emph{The Sign of Four},
+\emph{The Adventures of Sherlock Holmes}, \emph{The Memoirs of Sherlock Holmes},
+\emph{The Hound of the Baskervilles}, \emph{The Return of Sherlock Holmes},
+\emph{The Valley of Fear}, \emph{His Last Bow}, \emph{The Case-Book of Sherlock Holmes}.
 \newblock Project Gutenberg, \url{https://www.gutenberg.org/}.
+
+\bibitem{merity2016}
+S.~Merity, C.~Xiong, J.~Bradbury, and R.~Socher.
+\newblock Pointer sentinel mixture models.
+\newblock \emph{arXiv preprint arXiv:1609.07843}, 2016.
+(Introduces the WikiText-2 and WikiText-103 datasets.)
+
+\bibitem{koehn2007}
+P.~Koehn, H.~Hoang, A.~Birch, C.~Callison-Burch, M.~Federico, N.~Bertoldi, B.~Cowan,
+W.~Shen, C.~Moran, R.~Zens, C.~Dyer, O.~Bojar, A.~Constantin, and E.~Herbst.
+\newblock Moses: Open source toolkit for statistical machine translation.
+\newblock In \emph{Proceedings of the 45th Annual Meeting of the ACL, Demo and Poster Sessions}, 2007.
 
 \end{thebibliography}
 

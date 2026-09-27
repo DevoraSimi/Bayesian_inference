@@ -4,12 +4,14 @@ import re
 from pathlib import Path
 
 from data_utils import (
+    EOS,
+    UNK,
     build_vocab,
     encode_sentences,
     save_sentences,
     save_vocab,
     split_books,
-    text_to_sentences,
+    text_to_paragraphs,
 )
 
 START_RE = re.compile(r"\*\*\*\s*START OF.*?\*\*\*", re.IGNORECASE | re.DOTALL)
@@ -97,8 +99,12 @@ def split_into_stories(text):
             missing.append(title)
             continue
         start = cursor + match.start()
-        positions.append((title, start))
         cursor = start + (match.end() - match.start())
+        # the whole heading line (including a "VIII." prefix) belongs to no
+        # story: the previous story ends before it, this one starts after it
+        line_start = body.rfind("\n", 0, start) + 1
+        line_end = body.find("\n", cursor)
+        positions.append((title, line_start, line_end if line_end != -1 else len(body)))
 
     if missing:
         print(f"  warning: could not locate heading(s), merged into neighbors: {missing}")
@@ -107,9 +113,9 @@ def split_into_stories(text):
         return {"__whole__": text}
 
     stories = {}
-    for i, (title, start) in enumerate(positions):
+    for i, (title, _, content_start) in enumerate(positions):
         end = positions[i + 1][1] if i + 1 < len(positions) else len(body)
-        stories[title] = body[start:end]
+        stories[title] = body[content_start:end]
     return stories
 
 
@@ -133,7 +139,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--raw-dir", default="data/raw")
     parser.add_argument("--out-dir", default="data/processed")
-    parser.add_argument("--vocab-size", type=int, default=15000)
+    parser.add_argument("--min-count", type=int, default=2,
+                        help="keep tokens seen at least this often in train (WikiText uses 3; "
+                             "2 suits this smaller corpus)")
+    parser.add_argument("--max-vocab-size", type=int, default=None,
+                        help="optional cap on the vocab size, including <unk>/<eos>")
     parser.add_argument("--val-frac", type=float, default=0.1)
     parser.add_argument("--test-frac", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
@@ -146,9 +156,9 @@ def main():
     n_files = len(list(Path(args.raw_dir).glob("*.txt")))
     print(f"split {n_files} files into {len(units)} units (novels + individual stories)")
 
-    unit_sentences = {name: text_to_sentences(text) for name, text in units.items()}
+    unit_paragraphs = {name: text_to_paragraphs(text) for name, text in units.items()}
     train, val, test, assignment = split_books(
-        unit_sentences, args.val_frac, args.test_frac, args.seed
+        unit_paragraphs, args.val_frac, args.test_frac, args.seed
     )
 
     for split_name in ("test", "val"):
@@ -160,30 +170,41 @@ def main():
     metadata = {
         name: {
             "split": split_name,
-            "n_sentences": len(unit_sentences[name]),
-            "n_tokens": sum(len(sent) for sent in unit_sentences[name]),
+            "n_paragraphs": len(unit_paragraphs[name]),
+            "n_tokens": sum(len(para) for para in unit_paragraphs[name]),
         }
         for name, split_name in assignment.items()
     }
     (out_dir / "split_metadata.json").write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False)
+        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
-    word2id = build_vocab(train, args.vocab_size)  # build vocab from training set only
+    word2id = build_vocab(train, args.min_count, args.max_vocab_size)  # build vocab from training set only
     save_vocab(word2id, out_dir / "vocab.json")
 
     save_sentences(train, out_dir / "train.txt")
     save_sentences(val, out_dir / "val.txt")
     save_sentences(test, out_dir / "test.txt")
 
-    unk_id = word2id["<unk>"]
-    print(f"sentences: train={len(train)} val={len(val)} test={len(test)}")
-    print(f"vocab size: {len(word2id)}")
-    for split_name, sentences in (("train", train), ("val", val), ("test", test)):
-        ids = encode_sentences(sentences, word2id)
-        total = sum(len(sent) for sent in ids)
-        unk = sum(tok == unk_id for sent in ids for tok in sent)
-        print(f"{split_name} tokens: {total}, unk rate: {unk / total:.3%}")
+    # statistics over exactly what the models see: every paragraph plus its
+    # <eos> (see data_utils.load_split_ids)
+    unk_id, eos_id = word2id[UNK], word2id[EOS]
+    n_types = len({tok for para in train for tok in para})
+    print(f"paragraphs: train={len(train)} val={len(val)} test={len(test)}")
+    print(f"vocab size: {len(word2id)} ({len(word2id) - 2} of {n_types} distinct train types, "
+          f"seen >= {args.min_count} times, + <unk>/<eos>)")
+    for split_name, paragraphs in (("train", train), ("val", val), ("test", test)):
+        ids = [seq + [eos_id] for seq in encode_sentences(paragraphs, word2id)]
+        total = sum(len(seq) for seq in ids)
+        if total == 0:
+            print(f"{split_name} tokens: 0 (warning: split is empty)")
+            continue
+        unk = sum(tok == unk_id for seq in ids for tok in seq)
+        lengths = sorted(len(para) for para in paragraphs)
+        print(f"{split_name} tokens (incl. <eos>): {total}, unk rate: {unk / total:.3%}, "
+              f"vocab coverage: {1 - unk / total:.2%}, "
+              f"paragraph length (excl. <eos>): min {lengths[0]}, median {lengths[len(lengths) // 2]}, "
+              f"max {lengths[-1]}")
 
 
 if __name__ == "__main__":

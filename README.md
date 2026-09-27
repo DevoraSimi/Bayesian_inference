@@ -13,8 +13,28 @@ The complete Arthur Conan Doyle Sherlock Holmes canon (public domain, via Projec
 Gutenberg): 4 novels and 5 short-story anthologies, 9 files in `data/raw/`.
 Anthologies are automatically split into their individual stories (not just left as
 one blob per book) so that train/val/test splits happen at the *story* level —
-whole stories are held out, never individual sentences — avoiding the leakage that
-sentence-level shuffling would cause.
+whole stories are held out, never individual paragraphs — avoiding the leakage that
+paragraph-level shuffling would cause.
+
+## Preprocessing
+
+Follows WikiText (Merity et al., 2016), which was tokenized with the Moses tokenizer:
+
+- **One paragraph per sequence** (blank-line separated), no sentence splitting;
+  `<eos>` marks the end of a paragraph. Headings, chapter titles, contents
+  listings and "By A. Conan Doyle" lines are dropped (unlike WikiText, which
+  keeps section titles as `= Title =` lines: in these books they are layout and
+  front matter, not content).
+- **Original case kept** (`Holmes`, `The` and `the` are distinct tokens).
+- **Every punctuation mark is a token**; curly/straight quote variants are unified,
+  `--` becomes `—`, `…` becomes `...`.
+- **Moses/WikiText splitting**: `don't` → `don 't`, `Holmes's` → `Holmes 's`,
+  `well-known` → `well @-@ known`, `1,000` → `1 @,@ 000`, `3.5` → `3 @.@ 5`;
+  title abbreviations stay whole (`Mr.`, `Dr.`, `St.`).
+- **Numbers are kept** as tokens (`1889`, `221B`).
+- **Vocabulary** = every token seen at least `--min-count` times in the training
+  split (default 2; WikiText uses 3, but this corpus is ~4x smaller); everything
+  else becomes `<unk>`.
 
 ## Setup
 
@@ -25,9 +45,13 @@ pip install -r requirements.txt
 ## Pipeline
 
 ```bash
-# 1. Build the corpus: clean Gutenberg boilerplate, split into stories, tokenize,
-#    build vocab, split train/val/test at the story level.
-python3 src/preprocess.py
+# 1. Build the corpus: clean Gutenberg boilerplate, split into stories and
+#    paragraphs, tokenize, build vocab, split train/val/test at the story level.
+#    Changing preprocessing changes the vocab: retrain every model afterwards,
+#    and first move old outputs aside (experiment.py MERGES into an existing
+#    results/comparison.csv, and old checkpoints would sit next to new ones):
+#      mv checkpoints checkpoints_old; mv results results_old
+python3 src/preprocess.py            # --min-count 3 for the WikiText default
 
 # 2. Train individual models (optional -- experiment.py below does all of this
 #    as a parameter sweep, but these are useful for one-off runs):
@@ -47,7 +71,7 @@ python3 src/tune_rnn.py --hidden-size 128 --num-layers 1 --n-trials 20
 #    metrics, and training-loss history for every configuration.
 python3 src/experiment.py \
   --hmm-states 4 8 16 32 64 --vbhmm-states 4 8 16 32 64 \
-  --ngram-orders 2 3 --ngram-alpha 0.1 1.0 10.0 \
+  --ngram-orders 2 3 4 --ngram-alpha 10 30 100 300 \
   --rnn-hidden 64 128 256 --rnn-layers 1 2 --rnn-dropout 0.2 --rnn-epochs 15 \
   --mc-dropout-samples 5 20 50
 
@@ -55,11 +79,14 @@ python3 src/experiment.py \
 python3 src/list_checkpoints.py --out results/checkpoint_manifest.csv
 python3 src/plot_history.py
 
-# 6. Try live next-word suggestions from any trained model(s)
+# 6. Try live next-word suggestions from any trained model(s). Without --text it
+#    runs interactively: type a prefix, get suggestions, Ctrl-D to quit.
+#    Input is case-sensitive, like the training data ("Mr. Holmes", not "mr. holmes").
+#    <unk>/<eos> are never suggested; add --no-punct to suggest words only.
 python3 src/predict_demo.py \
   --hmm-checkpoint checkpoints/hmm_16 --vbhmm-checkpoint checkpoints/vbhmm_16 \
   --ngram-checkpoint checkpoints/ngram_3 --rnn-checkpoint checkpoints/rnn_256 \
-  --mc-dropout 50 --text "sherlock holmes said that"
+  --mc-dropout 50 --text "Sherlock Holmes said that"
 ```
 
 Every `train_*.py` script and `experiment.py` accept `--data-dir`, `--checkpoints-dir`,
@@ -68,19 +95,25 @@ for its full option list.
 
 ## Models
 
-- **N-gram** (`ngram.py`) — order-*n* Markov model with Dirichlet (Bayesian
-  additive) smoothing: `P(w|context) = (count + α)/(total + αV)`, the posterior
-  mean of a Dirichlet(α) prior, and by conjugacy exactly the Bayesian posterior
-  predictive for one draw. `order` and `α` are both swept as parameters.
+- **N-gram** (`ngram.py`) — order-*n* Markov model with hierarchical Dirichlet
+  smoothing (MacKay & Peto, 1995): `P(w|ctx) = (count(ctx,w) + α·P(w|shorter ctx))/(count(ctx) + α)`,
+  recursively trigram → bigram → unigram → uniform. Each level is the posterior
+  mean of a Dirichlet prior centred on the next-shorter context, and by conjugacy
+  exactly the Bayesian posterior predictive for one draw; rare contexts fall back
+  smoothly to shorter ones. `order` and `α` (total prior mass) are both swept.
 - **HMM** (`hmm.py`) — a from-scratch categorical HMM trained with Baum-Welch
   (MAP-EM): the forward-backward algorithm plus M-step point estimates with
   light Dirichlet smoothing, implemented without `hmmlearn`.
 - **VB-HMM** (`vb_hmm.py`) — the same model made fully Bayesian: Dirichlet
   *posterior distributions* (not point estimates) over the initial-state,
   transition, and emission distributions, fit by mean-field Variational Bayes
-  EM. Exposes the same interface as the MAP-EM HMM (via the posterior mean,
-  which is the Bayesian posterior predictive by conjugacy), so it's a drop-in
-  alternative wherever the MAP-EM HMM is used.
+  EM. States start from random data-scale pseudo-counts (a near-uniform start
+  never breaks symmetry: all states stay identical). The emission prior
+  defaults to `beta0 = 0.1` per word: 1.0 adds ~V pseudo-counts to every state
+  and pulls them all toward uniform. Exposes the same
+  interface as the MAP-EM HMM (via the posterior mean, which is the Bayesian
+  posterior predictive by conjugacy), so it's a drop-in alternative wherever
+  the MAP-EM HMM is used.
 - **RNN** (`rnn.py`) — an LSTM language model (PyTorch), with an optional
   **MC-Dropout** mode (`mc_dropout_predict`, `evaluate_rnn_mc_dropout`) that
   keeps dropout active at inference time and averages multiple stochastic
@@ -91,7 +124,7 @@ for its full option list.
 
 ```
 src/
-  data_utils.py       tokenization, vocab, sentence splitting/encoding
+  data_utils.py       WikiText-style tokenization, paragraph splitting, vocab, encoding
   preprocess.py        corpus loading, story-boundary splitting, CLI
 
   ngram.py              n-gram model
