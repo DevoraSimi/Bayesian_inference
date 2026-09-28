@@ -188,6 +188,7 @@ def run_rnn_sweep(train_data, val_data, test_data, vocab_size, hidden_list, laye
         history = []
         best_val_ppl = float("inf")
         best_state = None
+        best_optimizer_state = None
         best_epoch = 0
         epochs_since_improvement = 0
         start = time.time()
@@ -207,6 +208,7 @@ def run_rnn_sweep(train_data, val_data, test_data, vocab_size, hidden_list, laye
             if epoch_val_metrics["perplexity"] < best_val_ppl:
                 best_val_ppl = epoch_val_metrics["perplexity"]
                 best_state = copy.deepcopy(model.state_dict())
+                best_optimizer_state = copy.deepcopy(optimizer.state_dict())
                 best_epoch = epoch
                 epochs_since_improvement = 0
             else:
@@ -218,6 +220,7 @@ def run_rnn_sweep(train_data, val_data, test_data, vocab_size, hidden_list, laye
         train_time = time.time() - start
 
         model.load_state_dict(best_state)
+        optimizer.load_state_dict(best_optimizer_state)
         val_metrics = evaluate_rnn(model, val_data, criterion, bptt, punct_ids=punct_ids)
         test_metrics = evaluate_rnn(model, test_data, criterion, bptt, punct_ids=punct_ids)
         results.append(_row("RNN", hidden_size, train_time, val_metrics, test_metrics,
@@ -231,6 +234,7 @@ def run_rnn_sweep(train_data, val_data, test_data, vocab_size, hidden_list, laye
             "early_stopped": len(history) < epochs, "patience": patience,
             "lr": lr, "seed": seed, "train_time_s": round(train_time, 1),
         }
+        # history includes post-best epochs; load_rnn_training_state trims them on resume
         save_rnn_checkpoint(
             model, optimizer, best_epoch, config, {"val": val_metrics, "test": test_metrics},
             Path(checkpoints_dir) / f"rnn_h{hidden_size}_l{num_layers}_d{dropout}", history=history,

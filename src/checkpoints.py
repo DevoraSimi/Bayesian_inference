@@ -82,7 +82,11 @@ def load_rnn_training_state(path, device, lr):
     if ckpt.get("optimizer_state_dict") is not None:
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
     start_epoch = ckpt["epoch"] + 1
-    history = load_metadata(path).get("history", [])
+    # history may run past the saved epoch (early-stopped runs keep the
+    # post-best epochs for plotting); drop those so resumed training
+    # doesn't duplicate epoch numbers
+    history = [h for h in load_metadata(path).get("history", [])
+               if h["epoch"] < start_epoch]
     return model, optimizer, start_epoch, history
 
 

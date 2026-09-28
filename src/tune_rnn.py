@@ -1,6 +1,7 @@
 import argparse
 import copy
 import csv
+import math
 import time
 from pathlib import Path
 
@@ -9,8 +10,8 @@ import torch
 import torch.nn as nn
 
 from checkpoints import save_rnn_checkpoint
-from data_utils import EOS, load_split_ids, punctuation_ids
-from evaluation import evaluate_rnn, print_eval
+from data_utils import load_split_ids, punctuation_ids
+from evaluation import evaluate_rnn, print_eval, rnn_nll
 from rnn import LSTMLanguageModel, batchify, sentences_to_stream, train_epoch
 
 
@@ -117,12 +118,11 @@ def main():
 
     word2id, id2word, train_ids, val_ids, test_ids = load_split_ids(args.data_dir)
     vocab_size = len(word2id)
-    eos_id = word2id[EOS]
     punct_ids = punctuation_ids(word2id)
 
-    train_data = batchify(sentences_to_stream(train_ids, eos_id), args.batch_size, device)
-    val_data = batchify(sentences_to_stream(val_ids, eos_id), args.batch_size, device)
-    test_data = batchify(sentences_to_stream(test_ids, eos_id), args.batch_size, device)
+    train_data = batchify(sentences_to_stream(train_ids), args.batch_size, device)
+    val_data = batchify(sentences_to_stream(val_ids), args.batch_size, device)
+    test_data = batchify(sentences_to_stream(test_ids), args.batch_size, device)
 
     results_dir = Path(args.results_dir)
     trials_csv = results_dir / "optuna_trials.csv"
@@ -158,6 +158,7 @@ def main():
     history = []
     best_val_ppl = float("inf")
     best_state = None
+    best_optimizer_state = None
     best_epoch = 0
     epochs_since_improvement = 0
     start = time.time()
@@ -173,6 +174,8 @@ def main():
         history.append({
             "epoch": epoch,
             "train_loss": train_loss,
+            "train_nll": rnn_nll(model, train_data, criterion, args.bptt),
+            "val_nll": math.log(val_metrics["perplexity"]),
             "val_perplexity": val_metrics["perplexity"],
             "val_top5_acc": val_metrics["topk_acc"][5],
             "val_top5_acc_words": val_metrics["topk_acc_words"][5],
@@ -181,6 +184,7 @@ def main():
         if val_metrics["perplexity"] < best_val_ppl:
             best_val_ppl = val_metrics["perplexity"]
             best_state = copy.deepcopy(model.state_dict())
+            best_optimizer_state = copy.deepcopy(optimizer.state_dict())
             best_epoch = epoch
             epochs_since_improvement = 0
         else:
@@ -193,6 +197,7 @@ def main():
 
     print(f"restoring epoch {best_epoch}'s weights (best val_ppl={best_val_ppl:.2f}) before final evaluation")
     model.load_state_dict(best_state)
+    optimizer.load_state_dict(best_optimizer_state)
 
     val_metrics = evaluate_rnn(model, val_data, criterion, args.bptt, punct_ids=punct_ids)
     test_metrics = evaluate_rnn(model, test_data, criterion, args.bptt, punct_ids=punct_ids)
@@ -220,8 +225,9 @@ def main():
         "search_epochs": args.search_epochs,
     }
     out_path = Path(args.checkpoints_dir) / "rnn_optuna_best"
+    # history includes post-best epochs; load_rnn_training_state trims them on resume
     save_rnn_checkpoint(
-        model, optimizer, args.final_epochs, config, {"val": val_metrics, "test": test_metrics},
+        model, optimizer, best_epoch, config, {"val": val_metrics, "test": test_metrics},
         out_path, history=history,
     )
     print(f"saved best-config checkpoint: {out_path}.pt + {out_path}.json")

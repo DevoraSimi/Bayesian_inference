@@ -1,4 +1,5 @@
 import argparse
+import math
 import time
 from pathlib import Path
 
@@ -6,8 +7,8 @@ import torch
 import torch.nn as nn
 
 from checkpoints import load_rnn_training_state, save_rnn_checkpoint, with_ext
-from data_utils import EOS, load_split_ids, punctuation_ids
-from evaluation import evaluate_rnn, print_eval
+from data_utils import load_split_ids, punctuation_ids
+from evaluation import evaluate_rnn, print_eval, rnn_nll
 from rnn import LSTMLanguageModel, batchify, sentences_to_stream, train_epoch
 
 
@@ -33,12 +34,11 @@ def main():
 
     word2id, id2word, train_ids, val_ids, test_ids = load_split_ids(args.data_dir)
     vocab_size = len(word2id)
-    eos_id = word2id[EOS]
     punct_ids = punctuation_ids(word2id)
 
-    train_data = batchify(sentences_to_stream(train_ids, eos_id), args.batch_size, device)
-    val_data = batchify(sentences_to_stream(val_ids, eos_id), args.batch_size, device)
-    test_data = batchify(sentences_to_stream(test_ids, eos_id), args.batch_size, device)
+    train_data = batchify(sentences_to_stream(train_ids), args.batch_size, device)
+    val_data = batchify(sentences_to_stream(val_ids), args.batch_size, device)
+    test_data = batchify(sentences_to_stream(test_ids), args.batch_size, device)
 
     config = {
         "model_type": "RNN",
@@ -85,6 +85,8 @@ def main():
         history.append({
             "epoch": epoch,
             "train_loss": train_loss,
+            "train_nll": rnn_nll(model, train_data, criterion, args.bptt),
+            "val_nll": math.log(val_metrics["perplexity"]),
             "val_perplexity": val_metrics["perplexity"],
             "val_top5_acc": val_metrics["topk_acc"][5],
             "val_top5_acc_words": val_metrics["topk_acc_words"][5],

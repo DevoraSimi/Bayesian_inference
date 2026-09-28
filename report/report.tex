@@ -35,7 +35,7 @@ point-estimate latent-variable model; (iii) a fully Bayesian variant of the
 same HMM fit by mean-field Variational Bayes EM (VB-EM), which maintains
 Dirichlet \emph{posterior distributions} over the initial-state,
 transition, and emission parameters rather than point estimates; and (iv)
-an LSTM recurrent neural network language model, used both as a
+a long short-term memory (LSTM) recurrent neural network language model, used both as a
 point-estimate neural baseline and, via Monte Carlo Dropout, as an
 approximate Bayesian neural model with predictive uncertainty. All models
 are evaluated on held-out perplexity and top-$k$ next-word accuracy, the
@@ -74,7 +74,8 @@ uncertainty a model represents over its own parameters:
     distributions over them via mean-field VB-EM, so that predictions
     integrate over parameter uncertainty rather than plugging in a single
     value.
-    \item \textbf{Approximate Bayesian deep learning.} The LSTM has no
+    \item \textbf{Approximate Bayesian deep learning.} The long short-term
+    memory (LSTM) network~\cite{hochreiter1997} has no
     tractable parameter posterior, but Monte Carlo Dropout (Gal and
     Ghahramani, 2016) is used to approximate Bayesian model averaging over
     an implicit posterior over its weights, at prediction time.
@@ -301,59 +302,85 @@ and $\beta_0 = 0.1$ (sparse emissions).
 
 \subsection{LSTM recurrent neural network}
 
-A standard single-/multi-layer LSTM language model
-(\texttt{src/rnn.py}): a learned word embedding feeds an LSTM, whose
-hidden state at each position is projected by a linear decoder to logits
-over the vocabulary, trained with cross-entropy loss via Adam, gradient
-clipping, dropout regularization, and truncated backpropagation through
-time (BPTT) over paragraphs concatenated into a single token stream
-(delimited by \texttt{<eos>}). This is a point-estimate neural baseline:
-a single set of network weights, no distribution over weights.
+Like the HMM, the LSTM~\cite{hochreiter1997} carries the history in a
+state updated one word at a time, but the state is a learned continuous
+vector rather than a belief over discrete states. Each token is mapped to
+a learned embedding $e_t$, and the LSTM keeps a hidden state $h_t$ and a
+memory cell $c_t$, controlled by forget, input and output gates:
+\[
+\begin{aligned}
+f_t, i_t, o_t &= \sigma\big(W_{f,i,o}\, e_t + U_{f,i,o}\, h_{t-1} + b_{f,i,o}\big),
+\qquad g_t = \tanh(W_g e_t + U_g h_{t-1} + b_g), \\
+c_t &= f_t \odot c_{t-1} + i_t \odot g_t, \qquad h_t = o_t \odot \tanh(c_t).
+\end{aligned}
+\]
+The forget gate decides how much of the old memory to keep, while the
+input gate decides how much of the candidate content $g_t$ to write to
+the cell. Because $c_t$ is updated
+additively, information and gradients can propagate across many time steps, helping to alleviate the vanishing-gradient problem of plain RNNs. With two layers,the second LSTM layer takes the first layer's hidden state at each time step as input. A linear layer maps the top $h_t$ to the next-word
+distribution,
+\[
+P_\theta(w_{t+1} = w \mid w_{1:t}) = \mathrm{softmax}(W_{\text{out}} h_t + b_{\text{out}})_w ,
+\]
+where $\theta$ denotes all model parameters.
 
-\textbf{Hyperparameters explored (grid sweep,
-\texttt{src/experiment.py}):} hidden size, number of layers, dropout
-rate; training uses early stopping on validation perplexity (patience-based),
-restoring the best epoch's weights before final evaluation.
+Dropout is applied to the embeddings and to the LSTM outputs (and between
+layers when there are two). Similar contexts can lead to similar hidden
+states, allowing information learned from one context to generalize to
+others rather than relying only on exact count matches.
 
-\textbf{Hyperparameter search (\texttt{src/tune\_rnn.py}):} embedding
-size, dropout, and learning rate are additionally tuned with Optuna's
-Tree-structured Parzen Estimator (TPE) sampler, at a \emph{fixed}
-representative hidden size/layer count (searching architecture size
-jointly would make the winning embedding size/dropout/learning rate only
-valid for the specific architecture they happened to be paired with in a
-given trial, which would not transfer safely to the separate
-hidden-size/layer sweep above). The best configuration found is then
-retrained for a longer budget with early stopping and full history
-logging.
+The paragraphs are concatenated into one stream, split into $B = 20$
+parallel rows (the batch size), and processed in windows of $L = 30$
+tokens (truncated BPTT), so each mini-batch is $B \times L$ tokens. On
+each mini-batch we minimise the cross-entropy loss, which with a single
+true next token is its average negative log-probability,
+\[
+\mathcal{L}(\theta) = -\frac{1}{BL}\sum_{b=1}^{B}\sum_{t=1}^{L}
+\log P_\theta\big(w^{(b)}_{t+1} \mid w^{(b)}_{\le t}\big),
+\]
+where $w^{(b)}_{\le t}$ denotes the preceding tokens available to the
+model in row $b$, and take one Adam step, with the gradient norm clipped at $0.25$.
+The hidden state at the end of a window is passed on to the next one, so
+the forward context is not limited to the window; only the gradients are cut
+there, so gradients are propagated back at most 30 steps. We stop
+early when validation perplexity has not improved for 5 epochs and keep
+the weights of the best epoch. The result is a single point estimate
+$\hat\theta$ of the weights. Implemented in \texttt{src/rnn.py}.
 
-\subsubsection{Monte Carlo Dropout: approximate Bayesian inference}
+\textbf{Hyperparameters explored:} in two steps. First, embedding size,
+dropout and learning rate are tuned with Optuna's TPE
+sampler~\cite{akiba2019} (\texttt{src/tune\_rnn.py}): 20 trials of 5
+epochs each, scored by validation perplexity, then the best configuration
+is retrained for up to 20 epochs. The search runs at a fixed hidden size
+(128) and one layer. Second, with those three values fixed, a grid
+over hidden size and number of layers (\texttt{src/experiment.py}).
 
-Because the LSTM's exact weight posterior is intractable, we use Monte
-Carlo Dropout (Gal and Ghahramani, 2016) as an approximate Bayesian
-neural model. At prediction/evaluation time, dropout is kept
-\emph{active} (rather than disabled, as is standard at test time), and
-$M$ independent stochastic forward passes are run on the same input, each
-with an independently sampled dropout mask. Averaging the resulting
-softmax distributions approximates Bayesian model averaging over an
-implicit posterior over the network's weights; the standard deviation
-across samples for each candidate word gives an approximate predictive
-uncertainty unavailable from a single deterministic forward pass. This is
-used two ways:
-\begin{itemize}
-    \item \textbf{Demo-time uncertainty} (\texttt{predict\_demo.py}): top-$k$
-    next-word suggestions annotated with a mean probability and standard
-    deviation across MC samples.
-    \item \textbf{Re-scored evaluation} (\texttt{evaluate\_rnn\_mc\_dropout},
-    used in the sweep): perplexity and top-$k$ accuracy recomputed with MC
-    Dropout averaging, to test whether Bayesian model averaging changes
-    point predictive performance (not just uncertainty), and how many
-    stochastic passes are needed before the averaged prediction stops
-    changing.
-\end{itemize}
-Perplexity under MC Dropout is computed as $-\log$ of the \emph{mean}
-predictive probability at the true token (the mathematically correct way
-to score a Bayesian model average), not as the mean of each sample's
-log-probability.
+\subsubsection{Monte Carlo Dropout}
+
+The LSTM has no tractable posterior over its weights. Gal and
+Ghahramani~\cite{gal2016} showed that training with dropout is
+approximate variational inference, where $q(\theta)$ is the distribution
+of weights produced by random dropout masks. So at test time we keep
+dropout on and average $M$ forward passes, each with a fresh mask
+$\theta_m \sim q(\theta)$:
+\[
+\bar P(w \mid w_{1:t}) = \frac{1}{M}\sum_{m=1}^{M} P_{\theta_m}(w \mid w_{1:t})
+\;\approx\; \int P_\theta(w \mid w_{1:t})\, q(\theta)\, d\theta .
+\]
+Perplexity is computed from $\log \bar P$ at the true token, not from the
+mean of $\log P_{\theta_m}$: that would score the individual samples
+rather than their average, and by Jensen's inequality it is always worse.
+The spread across passes, $\sigma(w) = \operatorname{std}_m
+P_{\theta_m}(w \mid w_{1:t})$, measures how uncertain the model is about
+each word; with no dropout all passes agree and $\sigma = 0$.
+
+Nothing is retrained: the same weights are scored, only the prediction
+changes. We use it in two places. \texttt{evaluate\_rnn\_mc\_dropout}
+re-scores each trained model for several values of $M$ (e.g.\ 5, 20,
+50), to see whether averaging improves perplexity and accuracy and how
+many passes it takes to converge. \texttt{predict\_demo.py} shows each
+suggested word with $\bar P$ and $\sigma$. Implemented in
+\texttt{src/rnn.py} and \texttt{src/evaluation.py}.
 
 % ============================================================
 \section{Evaluation Protocol}
@@ -404,8 +431,9 @@ configuration for reproducibility:
     with the \emph{same} state-count grid used for both, enabling a
     direct MAP-EM vs.\ VB-EM comparison at matched capacity; VB-HMM prior
     concentrations held fixed.
-    \item \textbf{LSTM:} grid over hidden size $\times$ number of layers
-    $\times$ dropout, each trained with early stopping on validation
+    \item \textbf{LSTM:} grid over hidden size $\times$ number of layers,
+    with embedding size, dropout and learning rate fixed to the Optuna
+    result, each trained with early stopping on validation
     perplexity; optionally, each trained configuration is additionally
     re-evaluated with MC Dropout at several sample counts to study
     convergence of the Bayesian model average.
@@ -529,6 +557,11 @@ P.~Koehn, H.~Hoang, A.~Birch, C.~Callison-Burch, M.~Federico, N.~Bertoldi, B.~Co
 W.~Shen, C.~Moran, R.~Zens, C.~Dyer, O.~Bojar, A.~Constantin, and E.~Herbst.
 \newblock Moses: Open source toolkit for statistical machine translation.
 \newblock In \emph{Proceedings of the 45th Annual Meeting of the ACL, Demo and Poster Sessions}, 2007.
+
+\bibitem{hochreiter1997}
+S.~Hochreiter and J.~Schmidhuber.
+\newblock Long short-term memory.
+\newblock \emph{Neural Computation}, 9(8):1735--1780, 1997.
 
 \end{thebibliography}
 

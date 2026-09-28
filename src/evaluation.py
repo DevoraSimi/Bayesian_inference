@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from rnn import get_batch
+from rnn import detach_hidden, get_batch
 
 
 class TopKAccumulator:
@@ -134,9 +134,11 @@ def evaluate_rnn(model, data, criterion, bptt, k_list=(1, 5, 10), punct_ids=froz
         if punct_ids else None
     )
 
+    hidden = None
     for i in range(0, data.size(1) - 1, bptt):
         x, y = get_batch(data, i, bptt)
-        logits, _ = model(x)
+        logits, hidden = model(x, hidden)
+        hidden = detach_hidden(hidden)
         loss = criterion(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
         n = y.numel()
         total_loss += loss.item() * n
@@ -167,9 +169,11 @@ def rnn_nll(model, data, criterion, bptt):
     model.eval()
     total_loss = 0.0
     total_tokens = 0
+    hidden = None
     for i in range(0, data.size(1) - 1, bptt):
         x, y = get_batch(data, i, bptt)
-        logits, _ = model(x)
+        logits, hidden = model(x, hidden)
+        hidden = detach_hidden(hidden)
         loss = criterion(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
         total_loss += loss.item() * y.numel()
         total_tokens += y.numel()
@@ -200,12 +204,16 @@ def evaluate_rnn_mc_dropout(model, data, bptt, k_list=(1, 5, 10), punct_ids=froz
         if punct_ids else None
     )
 
+    # one carried state per MC sample, so each sample's context comes only
+    # from its own earlier passes
+    hiddens = [None] * n_samples
     for i in range(0, data.size(1) - 1, bptt):
         x, y = get_batch(data, i, bptt)
 
         prob_sum = None
-        for _ in range(n_samples):
-            logits, _ = model(x)
+        for s in range(n_samples):
+            logits, hidden = model(x, hiddens[s])
+            hiddens[s] = detach_hidden(hidden)
             probs = torch.softmax(logits, dim=-1)
             prob_sum = probs if prob_sum is None else prob_sum + probs
         mean_probs = prob_sum / n_samples

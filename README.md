@@ -122,7 +122,10 @@ for its full option list.
   interface as the MAP-EM HMM (via the posterior mean, which is the Bayesian
   posterior predictive by conjugacy), so it's a drop-in alternative wherever
   the MAP-EM HMM is used.
-- **RNN** (`rnn.py`) — an LSTM language model (PyTorch), with an optional
+- **RNN** (`rnn.py`) — an LSTM language model (PyTorch), trained on the
+  paragraphs concatenated into one stream with truncated BPTT (`--bptt`
+  windows): the hidden state is carried from one window to the next (detached,
+  so gradients stop at the window boundary but the context doesn't), with an optional
   **MC-Dropout** mode (`mc_dropout_predict`, `evaluate_rnn_mc_dropout`) that
   keeps dropout active at inference time and averages multiple stochastic
   passes — an approximate Bayesian treatment of the network's weights (Gal &
@@ -188,4 +191,6 @@ saved before this was added have no train NLL and are skipped; retrain them.
 `experiment.py`'s RNN sweep and `tune_rnn.py`'s final retrain both use early
 stopping (tracking the best validation-perplexity epoch and restoring those
 weights before the final evaluation) rather than training for a fixed epoch count
-regardless of overfitting.
+regardless of overfitting. The saved checkpoint holds the best epoch's weights,
+optimizer state and epoch number; its history keeps every epoch that ran (so the
+loss curves show the overfitting), and resuming trims it back to the best epoch.
