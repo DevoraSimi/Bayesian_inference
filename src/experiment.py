@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 
 from checkpoints import save_metrics_checkpoint, save_pickle_checkpoint, save_rnn_checkpoint
-from data_utils import EOS, load_split_ids, punctuation_ids
+from data_utils import load_split_ids, punctuation_ids
 from evaluation import evaluate_hmm, evaluate_ngram, evaluate_rnn, evaluate_rnn_mc_dropout, metrics_to_row
 from hmm import train_hmm
 from ngram import train_ngram
@@ -76,7 +76,7 @@ def run_hmm_sweep(train_ids, val_ids, test_ids, vocab_size, states_list, n_iter,
 
 
 def run_vbhmm_sweep(train_ids, val_ids, test_ids, vocab_size, states_list, n_iter, seed, punct_ids, checkpoints_dir,
-                     alpha0=1.0, beta0=1.0, pi0=1.0):
+                     alpha0=1.0, beta0=0.1, pi0=1.0):
     results = []
     total_train_tokens = sum(len(s) for s in train_ids)
     for n_states in states_list:
@@ -108,8 +108,9 @@ def run_vbhmm_sweep(train_ids, val_ids, test_ids, vocab_size, states_list, n_ite
 
 def run_ngram_sweep(train_ids, val_ids, test_ids, vocab_size, orders_list, alpha_list, punct_ids, checkpoints_dir):
     """Sweeps the grid order x alpha. alpha is the Dirichlet smoothing
-    concentration -- how strongly the prior pulls predictions toward
-    uniform -- as much a parameter worth experimenting with as order."""
+    concentration -- how strongly the prior pulls each context's predictions
+    toward the next-shorter context's -- as much a parameter worth
+    experimenting with as order."""
     results = []
     for order, alpha in itertools.product(orders_list, alpha_list):
         print(f"[Ngram] order={order} alpha={alpha}")
@@ -343,10 +344,12 @@ def plot_results(results, out_dir):
         plt.savefig(out_dir / "mc_dropout_convergence.png")
         plt.close()
 
-    # headline comparison: best (lowest test perplexity) config per model type
+    # headline comparison: per model type, the config with the lowest VAL
+    # perplexity (selecting on test would bias the reported test numbers
+    # optimistically), then report that config's test metrics
     by_model = {}
     for r in results:
-        if r["model"] not in by_model or r["test_perplexity"] < by_model[r["model"]]["test_perplexity"]:
+        if r["model"] not in by_model or r["val_perplexity"] < by_model[r["model"]]["val_perplexity"]:
             by_model[r["model"]] = r
     if by_model:
         order = [m for m in ("Ngram", "HMM", "VB-HMM", "RNN") if m in by_model]
@@ -356,13 +359,13 @@ def plot_results(results, out_dir):
         axes[0].bar(order, ppl, color="C0")
         for i, m in enumerate(order):
             axes[0].text(i, ppl[i], f"param={by_model[m]['param']}", ha="center", va="bottom", fontsize=8)
-        axes[0].set_ylabel("best test perplexity")
-        axes[0].set_title("Best perplexity per model")
+        axes[0].set_ylabel("test perplexity (config chosen on val)")
+        axes[0].set_title("Best config per model")
 
         acc = [by_model[m]["test_top5_acc_words"] * 100 for m in order]
         axes[1].bar(order, acc, color="C1")
         axes[1].set_ylabel("test top-5 acc, words only (%)")
-        axes[1].set_title("Best-perplexity config's accuracy per model")
+        axes[1].set_title("Best config's accuracy per model")
 
         plt.tight_layout()
         plt.savefig(out_dir / "summary_comparison.png")
@@ -380,10 +383,10 @@ def main():
                          help="defaults to --hmm-states, for a direct MAP-EM vs VB-EM comparison at matching n_states")
     parser.add_argument("--vbhmm-iter", type=int, default=None, help="defaults to --hmm-iter")
     parser.add_argument("--vbhmm-alpha0", type=float, default=1.0)
-    parser.add_argument("--vbhmm-beta0", type=float, default=1.0)
+    parser.add_argument("--vbhmm-beta0", type=float, default=0.1)
     parser.add_argument("--vbhmm-pi0", type=float, default=1.0)
     parser.add_argument("--ngram-orders", type=int, nargs="+", default=[2, 3])
-    parser.add_argument("--ngram-alpha", type=float, nargs="+", default=[1.0])
+    parser.add_argument("--ngram-alpha", type=float, nargs="+", default=[10.0, 30.0, 100.0])
     parser.add_argument("--rnn-hidden", type=int, nargs="+", default=[64, 128, 256])
     parser.add_argument("--rnn-layers", type=int, nargs="+", default=[1, 2])
     parser.add_argument("--rnn-dropout", type=float, nargs="+", default=[0.2])
@@ -416,7 +419,6 @@ def main():
 
     word2id, id2word, train_ids, val_ids, test_ids = load_split_ids(args.data_dir)
     vocab_size = len(word2id)
-    eos_id = word2id[EOS]
     punct_ids = punctuation_ids(word2id)
 
     ngram_results = []
@@ -443,9 +445,9 @@ def main():
     rnn_results = []
     if not args.skip_rnn:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        train_data = batchify(sentences_to_stream(train_ids, eos_id), args.batch_size, device)
-        val_data = batchify(sentences_to_stream(val_ids, eos_id), args.batch_size, device)
-        test_data = batchify(sentences_to_stream(test_ids, eos_id), args.batch_size, device)
+        train_data = batchify(sentences_to_stream(train_ids), args.batch_size, device)
+        val_data = batchify(sentences_to_stream(val_ids), args.batch_size, device)
+        test_data = batchify(sentences_to_stream(test_ids), args.batch_size, device)
 
         rnn_results = run_rnn_sweep(
             train_data, val_data, test_data, vocab_size, args.rnn_hidden, args.rnn_layers, args.rnn_dropout,

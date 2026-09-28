@@ -71,7 +71,7 @@ python3 src/tune_rnn.py --hidden-size 128 --num-layers 1 --n-trials 20
 #    metrics, and training-loss history for every configuration.
 python3 src/experiment.py \
   --hmm-states 4 8 16 32 64 --vbhmm-states 4 8 16 32 64 \
-  --ngram-orders 2 3 4 --ngram-alpha 10 30 100 300 \
+  --ngram-orders 2 3 4 --ngram-alpha 10 30 100 \
   --rnn-hidden 64 128 256 --rnn-layers 1 2 --rnn-dropout 0.2 --rnn-epochs 15 \
   --mc-dropout-samples 5 20 50
 
@@ -85,7 +85,7 @@ python3 src/plot_history.py
 #    <unk>/<eos> are never suggested; add --no-punct to suggest words only.
 python3 src/predict_demo.py \
   --hmm-checkpoint checkpoints/hmm_16 --vbhmm-checkpoint checkpoints/vbhmm_16 \
-  --ngram-checkpoint checkpoints/ngram_3 --rnn-checkpoint checkpoints/rnn_256 \
+  --ngram-checkpoint checkpoints/ngram_3_a30.0 --rnn-checkpoint checkpoints/rnn_256 \
   --mc-dropout 50 --text "Sherlock Holmes said that"
 ```
 

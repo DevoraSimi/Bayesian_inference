@@ -25,9 +25,11 @@ We study next-word prediction on a corpus of Arthur Conan Doyle's Sherlock
 Holmes novels and short stories as a controlled setting for comparing
 statistical language models that make different commitments to Bayesian
 inference. We implement and evaluate four model families on identical
-train/validation/test splits: (i) an $n$-gram Markov model with Dirichlet
-(additive) smoothing, whose smoothing constant is shown to be exactly the
-Bayes estimator under a Dirichlet prior; (ii) a discrete-emission Hidden
+train/validation/test splits: (i) an $n$-gram Markov model with
+hierarchical Dirichlet smoothing, in which each context's next-word
+distribution has a Dirichlet prior centred on the next-shorter context's
+distribution, so that the smoothed estimate is exactly a Bayesian posterior
+predictive; (ii) a discrete-emission Hidden
 Markov Model (HMM) fit by maximum-likelihood/MAP Baum-Welch EM, i.e.\ a
 point-estimate latent-variable model; (iii) a fully Bayesian variant of the
 same HMM fit by mean-field Variational Bayes EM (VB-EM), which maintains
@@ -50,7 +52,7 @@ formulation, data pipeline, and modeling/evaluation methodology.
 % ============================================================
 
 The task is \textbf{word-level next-token prediction}: given a prefix of
-tokens $w_1, \dots, w_{t-1}$ from a sentence, predict a distribution over
+tokens $w_1, \dots, w_{t-1}$ from a paragraph, predict a distribution over
 the next token $w_t$ from a fixed vocabulary. This is the same underlying
 predictive-text task that powers autocomplete and keyboard-suggestion
 systems, and it is a convenient testbed for a broader question: \emph{how
@@ -191,39 +193,47 @@ Paragraph lengths vary widely: the median paragraph has 29 tokens, the longest 7
 % ============================================================
 
 All four model families are trained and evaluated on the same encoded
-sentences (or, for the RNN, the same token stream) and share the same
-notion of ``vocabulary,'' so their outputs are directly comparable.
+paragraphs, each ending in \texttt{<eos>} (for the RNN, the same
+paragraphs concatenated into one token stream), and share the same
+vocabulary, so every model predicts the same tokens and their outputs are directly comparable.
 
-\subsection{$n$-gram model with Dirichlet smoothing}
+\subsection{$n$-gram model with hierarchical Dirichlet smoothing}
 
-An order-$n$ Markov model estimates
+The simplest model tested is the n-gram model, which predicts the next word from the $n-1$ words before it,
+using counts from the training data. Raw counts give probability zero to
+any word never seen after a context, so we smooth them with the
+hierarchical Dirichlet scheme of MacKay and Peto~\cite{mackay1995}. Let
+$h_k$ be the last $k$ words of the context and
+$c(h_k, w) = \sum_t \mathbf{1}\big[(w_{t-k}, \dots, w_{t-1}) = h_k,\ w_t = w\big]$
+the number of times $w$ followed $h_k$ in training, with
+$c(h_k) = \sum_w c(h_k, w)$. Then
 \[
-P(w_t \mid w_{t-n+1}, \dots, w_{t-1})
+P_k(w \mid h_k) = \frac{c(h_k, w) + \alpha\, P_{k-1}(w \mid h_{k-1})}
+{c(h_k) + \alpha}, \qquad P_{-1}(w) = \frac{1}{V},
 \]
-from co-occurrence counts of each context and following word. Rather than
-using raw maximum-likelihood counts (which assign zero probability to
-unseen context/word pairs), the model uses additive (Dirichlet) smoothing
-with concentration $\alpha$:
-\[
-P(w \mid \text{context}) = \frac{\text{count}(\text{context}, w) +
-\alpha}{\text{count}(\text{context}) + \alpha V}, \qquad V = |\text{vocab}|.
-\]
-This is not merely a heuristic: it is exactly the posterior \emph{mean} of
-a $\text{Dirichlet}(\alpha)$ prior placed over the categorical
-distribution of ``next word given this context,'' and by
-Dirichlet-multinomial conjugacy the posterior mean is also exactly the
-Bayesian posterior-predictive probability for a single next draw. The
-model is thus a genuine (if simple) Bayes estimator, using the same
-conjugate-prior idea that underlies the HMM's smoothing below, applied
-directly to $n$-gram counts. Implemented in \texttt{src/ngram.py}.
+so the trigram estimate is pulled toward the bigram, the bigram toward the
+unigram, and the unigram toward uniform. This is the posterior mean (and,
+by conjugacy, the posterior predictive) under a prior
+$\theta_{h_k} \sim \text{Dirichlet}\big(\alpha\, P_{k-1}(\cdot \mid
+h_{k-1})\big)$ on each context's next-word distribution.
+
+Here $\alpha$ is the prior's total pseudo-count mass: a context's own
+counts get weight $c(h_k)/(c(h_k) + \alpha)$, so frequent contexts follow
+their data while rare or unseen ones fall back on the shorter context.
+Plain additive smoothing is the special case where every context is
+smoothed straight toward uniform; with it, rare trigram contexts fall
+back to a near-random guess, and a trigram model did worse than a bigram.
+The model trains in a single counting pass and is fully interpretable,
+but it sees only the last $n-1$ words and cannot generalise across
+similar contexts. Implemented in \texttt{src/ngram.py}.
 
 \textbf{Hyperparameters explored:} order $n$ (context length) and the
-smoothing concentration $\alpha$.
+prior concentration $\alpha$.
 
 \subsection{Hidden Markov Model (point estimate)}
 
 A discrete-emission (categorical) HMM with $N$ latent states models a
-sentence as a Markov chain of unobserved states
+paragraph as a Markov chain of unobserved states
 $z_1, \dots, z_T$ that emit the observed word sequence
 $w_1, \dots, w_T$, parameterized by:
 \begin{itemize}
@@ -291,7 +301,7 @@ A standard single-/multi-layer LSTM language model
 hidden state at each position is projected by a linear decoder to logits
 over the vocabulary, trained with cross-entropy loss via Adam, gradient
 clipping, dropout regularization, and truncated backpropagation through
-time (BPTT) over sentences concatenated into a single token stream
+time (BPTT) over paragraphs concatenated into a single token stream
 (delimited by \texttt{<eos>}). This is a point-estimate neural baseline:
 a single set of network weights, no distribution over weights.
 
@@ -382,7 +392,9 @@ weights/parameters, training config, and validation/test metrics) per
 configuration for reproducibility:
 
 \begin{itemize}
-    \item \textbf{$n$-gram:} grid over order $\times$ smoothing $\alpha$.
+    \item \textbf{$n$-gram:} grid over order $n \in \{2, 3\}$ $\times$
+    prior concentration $\alpha \in \{10, 30, 100\}$ (defaults of
+    \texttt{experiment.py}).
     \item \textbf{HMM and VB-HMM:} grid over number of latent states,
     with the \emph{same} state-count grid used for both, enabling a
     direct MAP-EM vs.\ VB-EM comparison at matched capacity; VB-HMM prior
@@ -402,7 +414,10 @@ stopping.
 Every configuration of every model is evaluated with the identical
 protocol of Section~4 on the identical held-out test split, so that
 perplexity and top-$k$ accuracy are directly comparable model-to-model
-and not just within a model family.
+and not just within a model family. The ``best'' configuration of each
+model family is selected by \emph{validation} perplexity, and its test
+metrics are then reported; the test split is never used for selection,
+which would bias the reported test numbers optimistically.
 
 % ============================================================
 \section{Results}
@@ -464,6 +479,11 @@ vs.\ model-complexity trade-off.}
 L.~R. Rabiner.
 \newblock A tutorial on hidden Markov models and selected applications in speech recognition.
 \newblock \emph{Proceedings of the IEEE}, 77(2):257--286, 1989.
+
+\bibitem{mackay1995}
+D.~J.~C. MacKay and L.~C.~B. Peto.
+\newblock A hierarchical Dirichlet language model.
+\newblock \emph{Natural Language Engineering}, 1(3):289--308, 1995.
 
 \bibitem{beal2003}
 M.~J. Beal.

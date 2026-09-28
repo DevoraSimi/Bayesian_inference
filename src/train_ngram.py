@@ -13,7 +13,8 @@ def main():
     parser.add_argument("--data-dir", default="data/processed")
     parser.add_argument("--checkpoints-dir", default="checkpoints")
     parser.add_argument("--order", type=int, default=3, help="2=bigram, 3=trigram, ...")
-    parser.add_argument("--alpha", type=float, default=1.0, help="Dirichlet smoothing concentration")
+    parser.add_argument("--alpha", type=float, default=30.0,
+                        help="total Dirichlet prior mass pulling each context toward the next-shorter one")
     args = parser.parse_args()
 
     word2id, id2word, train_ids, val_ids, test_ids = load_split_ids(args.data_dir)
@@ -42,7 +43,7 @@ def main():
     }
     metrics = {"val": val_metrics, "test": test_metrics}
 
-    out_path = Path(args.checkpoints_dir) / f"ngram_{args.order}"
+    out_path = Path(args.checkpoints_dir) / f"ngram_{args.order}_a{args.alpha}"
     save_pickle_checkpoint(model, config, metrics, out_path)
     print(f"saved checkpoint: {out_path}.pkl + {out_path}.json")
 
