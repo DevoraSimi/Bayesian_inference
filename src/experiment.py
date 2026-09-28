@@ -18,14 +18,14 @@ from rnn import LSTMLanguageModel, batchify, sentences_to_stream, train_epoch
 from vb_hmm import train_vb_hmm
 
 RESULT_FIELDS = [
-    "model", "param", "num_layers", "dropout", "alpha", "mc_samples", "train_time_s",
+    "model", "param", "num_layers", "dropout", "alpha", "beta0", "mc_samples", "train_time_s",
     "converged", "n_iter_used", "val_perplexity", "test_perplexity",
     "test_top1_acc", "test_top5_acc", "test_top1_acc_words", "test_top5_acc_words",
 ]
 
 
 def _row(model_name, param, train_time, val_metrics, test_metrics, converged="", n_iter_used="",
-         num_layers="", dropout="", alpha="", mc_samples=""):
+         num_layers="", dropout="", alpha="", beta0="", mc_samples=""):
     val_row = metrics_to_row(val_metrics)
     test_row = metrics_to_row(test_metrics)
     return {
@@ -34,6 +34,7 @@ def _row(model_name, param, train_time, val_metrics, test_metrics, converged="",
         "num_layers": num_layers,
         "dropout": dropout,
         "alpha": alpha,
+        "beta0": beta0,
         "mc_samples": mc_samples,
         "train_time_s": round(train_time, 1),
         "converged": converged,
@@ -77,35 +78,55 @@ def run_hmm_sweep(train_ids, val_ids, test_ids, vocab_size, states_list, n_iter,
     return results
 
 
+def _run_vbhmm(train_ids, val_ids, test_ids, vocab_size, n_states, n_iter, seed, punct_ids, checkpoints_dir,
+               alpha0, beta0, pi0, model_name, ckpt_name, row_beta0=""):
+    start = time.time()
+    model = train_vb_hmm(train_ids, n_states, vocab_size, n_iter, seed, alpha0, beta0, pi0, val_sequences=val_ids)
+    train_time = time.time() - start
+
+    val_metrics = evaluate_hmm(model, val_ids, punct_ids=punct_ids)
+    test_metrics = evaluate_hmm(model, test_ids, punct_ids=punct_ids)
+    row = _row(model_name, n_states, train_time, val_metrics, test_metrics,
+               converged=model.monitor_.converged, n_iter_used=model.monitor_.iter, beta0=row_beta0)
+    print(row)
+
+    config = {
+        "model_type": model_name, "n_states": n_states, "n_iter": n_iter, "seed": seed,
+        "vocab_size": vocab_size, "alpha0": alpha0, "beta0": beta0, "pi0": pi0,
+        "train_time_s": round(train_time, 1),
+        "converged": model.monitor_.converged, "n_iter_used": model.monitor_.iter,
+        "total_train_tokens": sum(len(s) for s in train_ids),
+    }
+    save_pickle_checkpoint(
+        model, config, {"val": val_metrics, "test": test_metrics},
+        Path(checkpoints_dir) / ckpt_name,
+        history=model.monitor_.history, val_history=model.monitor_.val_history,
+        train_nll_history=model.monitor_.train_nll_history,
+    )
+    return row
+
+
 def run_vbhmm_sweep(train_ids, val_ids, test_ids, vocab_size, states_list, n_iter, seed, punct_ids, checkpoints_dir,
                      alpha0=1.0, beta0=0.1, pi0=1.0):
     results = []
-    total_train_tokens = sum(len(s) for s in train_ids)
     for n_states in states_list:
         print(f"[VB-HMM] n_states={n_states}")
-        start = time.time()
-        model = train_vb_hmm(train_ids, n_states, vocab_size, n_iter, seed, alpha0, beta0, pi0, val_sequences=val_ids)
-        train_time = time.time() - start
+        results.append(_run_vbhmm(train_ids, val_ids, test_ids, vocab_size, n_states, n_iter, seed, punct_ids,
+                                  checkpoints_dir, alpha0, beta0, pi0, "VB-HMM", f"vbhmm_{n_states}"))
+    return results
 
-        val_metrics = evaluate_hmm(model, val_ids, punct_ids=punct_ids)
-        test_metrics = evaluate_hmm(model, test_ids, punct_ids=punct_ids)
-        results.append(_row("VB-HMM", n_states, train_time, val_metrics, test_metrics,
-                             converged=model.monitor_.converged, n_iter_used=model.monitor_.iter))
-        print(results[-1])
 
-        config = {
-            "model_type": "VB-HMM", "n_states": n_states, "n_iter": n_iter, "seed": seed,
-            "vocab_size": vocab_size, "alpha0": alpha0, "beta0": beta0, "pi0": pi0,
-            "train_time_s": round(train_time, 1),
-            "converged": model.monitor_.converged, "n_iter_used": model.monitor_.iter,
-            "total_train_tokens": total_train_tokens,
-        }
-        save_pickle_checkpoint(
-            model, config, {"val": val_metrics, "test": test_metrics},
-            Path(checkpoints_dir) / f"vbhmm_{n_states}",
-            history=model.monitor_.history, val_history=model.monitor_.val_history,
-            train_nll_history=model.monitor_.train_nll_history,
-        )
+def run_vbhmm_beta0_sweep(train_ids, val_ids, test_ids, vocab_size, n_states, beta0_list, n_iter, seed, punct_ids,
+                          checkpoints_dir, alpha0=1.0, pi0=1.0):
+    """Varies only the emission prior beta0 at a single n_states, to show the
+    prior's effect without a full alpha0 x beta0 x pi0 grid. beta0 matters
+    most: it sets how sparse each state's word distribution is."""
+    results = []
+    for beta0 in beta0_list:
+        print(f"[VB-HMM-beta0] n_states={n_states} beta0={beta0}")
+        results.append(_run_vbhmm(train_ids, val_ids, test_ids, vocab_size, n_states, n_iter, seed, punct_ids,
+                                  checkpoints_dir, alpha0, beta0, pi0, "VB-HMM-beta0",
+                                  f"vbhmm_{n_states}_b{beta0}", row_beta0=beta0))
     return results
 
 
@@ -240,7 +261,7 @@ def run_rnn_sweep(train_data, val_data, test_data, vocab_size, hidden_list, laye
     return results
 
 
-CSV_KEY_FIELDS = ["model", "param", "num_layers", "dropout", "alpha", "mc_samples"]
+CSV_KEY_FIELDS = ["model", "param", "num_layers", "dropout", "alpha", "beta0", "mc_samples"]
 
 
 def _csv_row_key(row):
@@ -295,6 +316,17 @@ def plot_results(results, out_dir):
         plt.figure()
         _plot_vs_param(plt.gca(), vbhmm_rows, "n_states", "VB-HMM: perplexity vs. states")
         plt.savefig(out_dir / "vbhmm_perplexity.png")
+        plt.close()
+
+    beta0_rows = sorted([r for r in results if r["model"] == "VB-HMM-beta0"], key=lambda r: r["beta0"])
+    if beta0_rows:
+        plt.figure()
+        plt.plot([r["beta0"] for r in beta0_rows], [r["test_perplexity"] for r in beta0_rows], marker="o")
+        plt.xscale("log")
+        plt.xlabel("emission prior beta0")
+        plt.ylabel("test perplexity")
+        plt.title(f"VB-HMM: effect of the prior (n_states={beta0_rows[0]['param']})")
+        plt.savefig(out_dir / "vbhmm_beta0.png")
         plt.close()
 
     ngram_rows = [r for r in results if r["model"] == "Ngram"]
@@ -390,6 +422,12 @@ def main():
     parser.add_argument("--vbhmm-alpha0", type=float, default=1.0)
     parser.add_argument("--vbhmm-beta0", type=float, default=0.1)
     parser.add_argument("--vbhmm-pi0", type=float, default=1.0)
+    parser.add_argument("--vbhmm-beta0-sweep", type=float, nargs="+", default=[],
+                         help="if given, also train VB-HMM once per beta0 value here, at a single n_states, to show "
+                              "the prior's effect (off by default). e.g. --vbhmm-beta0-sweep 0.01 0.1 1")
+    parser.add_argument("--vbhmm-beta0-states", type=int, default=None,
+                         help="n_states for --vbhmm-beta0-sweep; defaults to the VB-HMM n_states with the lowest "
+                              "val perplexity in this run")
     parser.add_argument("--ngram-orders", type=int, nargs="+", default=[2, 3])
     parser.add_argument("--ngram-alpha", type=float, nargs="+", default=[10.0, 30.0, 100.0])
     parser.add_argument("--rnn-hidden", type=int, nargs="+", default=[64, 128, 256])
@@ -445,6 +483,17 @@ def main():
         vbhmm_results = run_vbhmm_sweep(
             train_ids, val_ids, test_ids, vocab_size, vbhmm_states, vbhmm_iter, args.seed,
             punct_ids, args.checkpoints_dir, args.vbhmm_alpha0, args.vbhmm_beta0, args.vbhmm_pi0,
+        )
+
+    if args.vbhmm_beta0_sweep:
+        beta0_states = args.vbhmm_beta0_states
+        if beta0_states is None:
+            if not vbhmm_results:
+                parser.error("--vbhmm-beta0-sweep needs --vbhmm-beta0-states when the VB-HMM sweep is skipped")
+            beta0_states = min(vbhmm_results, key=lambda r: r["val_perplexity"])["param"]
+        vbhmm_results += run_vbhmm_beta0_sweep(
+            train_ids, val_ids, test_ids, vocab_size, beta0_states, args.vbhmm_beta0_sweep, vbhmm_iter, args.seed,
+            punct_ids, args.checkpoints_dir, args.vbhmm_alpha0, args.vbhmm_pi0,
         )
 
     rnn_results = []

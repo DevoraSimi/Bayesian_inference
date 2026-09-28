@@ -93,10 +93,10 @@ class CategoricalHMM:
         gamma = alpha * beta
         gamma /= gamma.sum(axis=1, keepdims=True)
 
-        xi_sum = np.zeros((N, N))
-        for t in range(T - 1):
-            xi_t = (alpha[t][:, None] * A) * (B[:, obs[t + 1]] * beta[t + 1])[None, :] / scale[t + 1]
-            xi_sum += xi_t
+        # xi_t(i,j) = alpha_t(i) A(i,j) B(j,o_{t+1}) beta_{t+1}(j) / c_{t+1};
+        # A(i,j) factors out of the sum over t, leaving one matrix product
+        w = B[:, obs[1:]].T * beta[1:] / scale[1:, None]
+        xi_sum = A * (alpha[:-1].T @ w)
 
         log_likelihood = np.log(scale).sum()
         return gamma, xi_sum, log_likelihood

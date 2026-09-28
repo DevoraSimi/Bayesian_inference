@@ -253,57 +253,51 @@ We train with Baum-Welch (EM). The E-step uses forward-backward to get
 the expected state and transition counts,
 $\gamma_t(i) = P(z_t = i \mid w_{1:T})$ and
 $\xi_t(i,j) = P(z_t = i, z_{t+1} = j \mid w_{1:T})$. The M-step normalises
-these counts, plus a pseudo-count $\epsilon = 10^{-3}$, e.g.
+these counts, with an additive smoothing term $\epsilon = 10^{-3}$, e.g.
 \(
 A_{ij} = \frac{\sum_t \xi_t(i,j) + \epsilon}{\sum_{t<T} \gamma_t(i) + N\epsilon},
 \)
-and likewise for $B$ and $\pi$. Without $\epsilon$, a word a state never
-emitted in training would get probability zero. This is a MAP estimate
-under a Dirichlet$(1+\epsilon)$ prior: a single point estimate of
-$\pi, A, B$ with no uncertainty, which the VB-HMM below addresses.
-Parameters are initialised at random (identical states would never
-separate), and EM finds only a local optimum. Implemented in
+and analogously for $B$ and $\pi$. The smoothing prevents zero
+probabilities for transitions or emissions that receive zero expected
+counts. The resulting model is a point estimate of $\pi$, $A$, and $B$,
+with no posterior uncertainty over these parameters, which the VB-HMM
+below addresses.
+Parameters are randomly initialised to break symmetry between the
+hidden states, and EM finds only a local optimum. Implemented in
 \texttt{src/hmm.py}.
 
 \textbf{Hyperparameters explored:} number of latent states $N$.
 
 \subsection{Variational Bayes HMM (full posterior)}
 
-The Variational Bayes HMM (\texttt{src/vb\_hmm.py}) uses the identical
-generative model as the point-estimate HMM above, but places explicit
-Dirichlet priors on $\pi$, each row of $A$, and each row of $B$, and fits
-the model by mean-field Variational Bayes EM (VB-EM) rather than plain
-EM. Instead of point estimates, the model maintains Dirichlet
-\emph{posterior} concentration parameters for each of $\pi, A, B$. The
-E-step's forward-backward recursion plugs in the expected
-log-probabilities under the current posterior,
-\[
-\widetilde{\theta} = \exp\big(\psi(\alpha) - \psi(\textstyle\sum_j \alpha_j)\big),
-\]
-where $\psi$ is the digamma function, rather than a point-estimate
-probability -- the standard mean-field update for conjugate-exponential
-models (Beal, 2003; Bishop, 2006, Ch.\ 10). By Jensen's inequality this
-quantity is always $\le$ the naive ratio $\alpha_i / \sum_j \alpha_j$, a
-``Bayesian shrinkage'' effect that makes VB-EM inherently more
-conservative than MAP-EM about rare states and rare emissions. The M-step
-is a conjugate update: each posterior is simply the prior plus expected
-sufficient statistics, with no separate normalization needed. The
-digamma function is implemented from scratch (shift-up recurrence plus
-asymptotic expansion) to keep the model dependency-free.
+The HMM above keeps a single value for each parameter, so it cannot tell
+a transition seen once from one seen a thousand times. The VB-HMM keeps
+the same model but puts Dirichlet priors on the parameters,
+$A_{i\cdot} \sim \text{Dir}(\alpha_0)$, $B_{j\cdot} \sim \text{Dir}(\beta_0)$,
+$\pi \sim \text{Dir}(\pi_0)$, and fits an approximate posterior
+$q(z)\,q(\pi, A, B)$ by mean-field Variational Bayes~\cite{beal2003,bishop2006}.
 
-The fitted model exposes \texttt{startprob\_}, \texttt{transmat\_}, and
-\texttt{emissionprob\_} as the \emph{posterior mean} of each Dirichlet
-(again, by conjugacy, exactly the Bayesian posterior-predictive
-distribution for one more draw), making it a drop-in replacement for the
-point-estimate HMM in every downstream evaluation and demo function. This
-lets the study directly compare MAP-EM vs.\ VB-EM \emph{at matching
-numbers of latent states}, isolating the effect of full posterior
-inference from any confound of model capacity.
+By conjugacy the posterior stays Dirichlet, so the M-step just adds the
+expected counts to the prior, e.g.\
+$\hat\alpha_{ij} = \alpha_0 + \sum_t \xi_t(i,j)$. The E-step is the same
+forward-backward, but with each parameter replaced by
+\[
+\widetilde{A}_{ij} = \exp\big(\mathbb{E}_q[\log A_{ij}]\big)
+= \exp\Big(\psi(\hat\alpha_{ij}) - \psi\big(\textstyle\sum_k \hat\alpha_{ik}\big)\Big),
+\]
+where $\psi$ is the digamma function. For large counts this is close to
+$\hat\alpha_{ij} / \sum_k \hat\alpha_{ik}$, but for small counts it is
+smaller, so rare transitions,
+emissions and states are down-weighted automatically. Training maximises
+the ELBO, $\sum_t \log \widetilde{c}_t - \mathrm{KL}(q \,\|\, p)$, which
+never decreases, and stops when its relative change is below $10^{-4}$.
+For prediction we use the posterior mean
+$\hat\alpha_{ij} / \sum_k \hat\alpha_{ik}$, so the model plugs into the
+same forward filter as the HMM. Implemented in \texttt{src/vb\_hmm.py}.
 
 \textbf{Hyperparameters explored:} number of latent states $N$ (matched to
-the point-estimate HMM sweep); Dirichlet prior concentrations
-$\alpha_0, \beta_0, \pi_0$ for the transition, emission, and initial-state
-priors.
+the HMM sweep). The priors are fixed at $\alpha_0 = \pi_0 = 1$ (uniform)
+and $\beta_0 = 0.1$ (sparse emissions).
 
 \subsection{LSTM recurrent neural network}
 

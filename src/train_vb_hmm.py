@@ -15,7 +15,8 @@ def main():
     parser.add_argument("--n-states", type=int, default=16)
     parser.add_argument("--n-iter", type=int, default=30)
     parser.add_argument("--alpha0", type=float, default=1.0, help="Dirichlet prior concentration for transitions")
-    parser.add_argument("--beta0", type=float, default=1.0, help="Dirichlet prior concentration for emissions")
+    parser.add_argument("--beta0", type=float, default=0.1,
+                        help="Dirichlet prior concentration for emissions. Smaller values encourage sparsity in the emission distributions")
     parser.add_argument("--pi0", type=float, default=1.0, help="Dirichlet prior concentration for initial state")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -57,7 +58,8 @@ def main():
 
     out_path = Path(args.checkpoints_dir) / f"vbhmm_{args.n_states}"
     save_pickle_checkpoint(model, config, metrics, out_path,
-                            history=model.monitor_.history, val_history=model.monitor_.val_history)
+                            history=model.monitor_.history, val_history=model.monitor_.val_history,
+                            train_nll_history=model.monitor_.train_nll_history)
     print(f"saved checkpoint: {out_path}.pkl + {out_path}.json")
 
 

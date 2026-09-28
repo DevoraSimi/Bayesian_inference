@@ -1,24 +1,20 @@
 import numpy as np
+from scipy.special import digamma as _digamma, gammaln as _log_gamma
 
 from hmm import ConvergenceMonitor, sequence_nll
 
 
-def _digamma(x):
-    """Numerically stable digamma (psi) function via the standard shift-up
-    recurrence (psi(x) = psi(x+1) - 1/x) plus an asymptotic expansion for
-    x >= 6. Implemented locally rather than importing scipy.special.digamma,
-    to avoid adding scipy as a project dependency for a single function and
-    to keep this model, like hmm.py, implemented from first principles."""
-    x = np.asarray(x, dtype=np.float64)
-    result = np.zeros_like(x)
-    while np.any(x < 6):
-        mask = x < 6
-        result = np.where(mask, result - 1.0 / x, result)
-        x = np.where(mask, x + 1.0, x)
-    inv = 1.0 / x
-    inv2 = inv * inv
-    result += np.log(x) - 0.5 * inv - inv2 * (1 / 12 - inv2 * (1 / 120 - inv2 * (1 / 252)))
-    return result
+def _dirichlet_kl(post, prior):
+    """Sum over rows of KL(Dir(post_row) || Dir(prior, ..., prior)), for a
+    symmetric scalar prior; post is a vector (one Dirichlet) or a matrix
+    (one Dirichlet per row)."""
+    post = np.atleast_2d(post)
+    K = post.shape[1]
+    post_sum = post.sum(axis=1, keepdims=True)
+    kl = (_log_gamma(post_sum[:, 0]) - _log_gamma(post).sum(axis=1)
+          - _log_gamma(K * prior) + K * _log_gamma(prior)
+          + ((post - prior) * (_digamma(post) - _digamma(post_sum))).sum(axis=1))
+    return kl.sum()
 
 
 class VariationalBayesHMM:
@@ -50,23 +46,30 @@ class VariationalBayesHMM:
     """
 
     def __init__(self, n_components, n_features, n_iter=30, tol=1e-4, random_state=42,
-                 alpha0=1.0, beta0=1.0, pi0=1.0):
+                 alpha0=1.0, beta0=0.1, pi0=1.0):
         self.n_components = n_components
         self.n_features = n_features
         self.n_iter = n_iter
-        self.tol = tol
+        self.tol = tol  # relative ELBO change threshold for convergence
         self.random_state = random_state
         self.alpha0 = alpha0
         self.beta0 = beta0
         self.pi0 = pi0
         self.monitor_ = ConvergenceMonitor()
 
-    def _init_posteriors(self):
+    def _init_posteriors(self, n_tokens):
+        """Prior + random pseudo-counts on the scale of the real data, as if
+        each state had already been assigned ~n_tokens/N tokens at random.
+        The random part must be this large: a tiny perturbation of the prior
+        (e.g. +U(0, 0.1) on 11k emission entries) leaves all states nearly
+        identical, so they receive the same expected counts every E-step and
+        never break symmetry -- the model degenerates to a single state."""
         rng = np.random.default_rng(self.random_state)
         N, V = self.n_components, self.n_features
-        self.pi_post = np.full(N, self.pi0) + rng.random(N) * 0.1
-        self.A_post = np.full((N, N), self.alpha0) + rng.random((N, N)) * 0.1
-        self.B_post = np.full((N, V), self.beta0) + rng.random((N, V)) * 0.1
+        per_state = n_tokens / N
+        self.pi_post = self.pi0 + rng.dirichlet(np.ones(N)) * N
+        self.A_post = self.alpha0 + rng.dirichlet(np.ones(N), size=N) * per_state
+        self.B_post = self.beta0 + rng.dirichlet(np.ones(V), size=N) * per_state
 
     def _expected_probs(self):
         pi_tilde = np.exp(_digamma(self.pi_post) - _digamma(self.pi_post.sum()))
@@ -80,10 +83,8 @@ class VariationalBayesHMM:
         Returns per-position state posteriors (gamma), summed pairwise
         transition posteriors (xi_sum), and the log of the forward-pass
         scaling factors -- the data-fit term of the variational lower
-        bound, used here as a monotonically-improving convergence signal
-        (the full ELBO would additionally subtract KL(posterior||prior)
-        terms for pi/A/B; omitted for simplicity since it doesn't change
-        which direction the algorithm is converging)."""
+        bound (fit() subtracts the KL(posterior||prior) terms for pi/A/B
+        to get the full ELBO; the data term alone is not monotone)."""
         T = len(obs)
         N = self.n_components
 
@@ -106,10 +107,10 @@ class VariationalBayesHMM:
         gamma = alpha * beta
         gamma /= gamma.sum(axis=1, keepdims=True)
 
-        xi_sum = np.zeros((N, N))
-        for t in range(T - 1):
-            xi_t = (alpha[t][:, None] * A_tilde) * (B_tilde[:, obs[t + 1]] * beta[t + 1])[None, :] / scale[t + 1]
-            xi_sum += xi_t
+        # xi_t(i,j) = alpha_t(i) A(i,j) B(j,o_{t+1}) beta_{t+1}(j) / c_{t+1};
+        # A(i,j) factors out of the sum over t, leaving one matrix product
+        w = B_tilde[:, obs[1:]].T * beta[1:] / scale[1:, None]
+        xi_sum = A_tilde * (alpha[:-1].T @ w)
 
         data_term = np.log(scale).sum()
         return gamma, xi_sum, data_term
@@ -119,7 +120,7 @@ class VariationalBayesHMM:
         posterior-mean startprob_/transmat_/emissionprob_ after each
         iteration's M-step) and appended to monitor_.val_history, for
         overfitting monitoring -- never used to influence training itself."""
-        self._init_posteriors()
+        self._init_posteriors(sum(len(obs) for obs in sequences))
         N, V = self.n_components, self.n_features
         prev_bound = None
 
@@ -129,7 +130,11 @@ class VariationalBayesHMM:
             start_num = np.zeros(N)
             trans_num = np.zeros((N, N))
             emit_num = np.zeros((N, V))
-            total_bound = 0.0
+            # ELBO = sum of data terms - KL(q(theta) || p(theta)), with the KL
+            # taken for the posterior used in this E-step (i.e. before the M-step)
+            total_bound = -(_dirichlet_kl(self.pi_post, self.pi0)
+                            + _dirichlet_kl(self.A_post, self.alpha0)
+                            + _dirichlet_kl(self.B_post, self.beta0))
 
             for obs in sequences:
                 obs = np.asarray(obs)
@@ -151,8 +156,13 @@ class VariationalBayesHMM:
             self.monitor_.iter = iteration
             self.monitor_.history.append(total_bound)
             if val_sequences is not None:
+                # train scored the same way as val (posterior-mean params, same
+                # function), unlike total_bound, which is the ELBO
+                self.monitor_.train_nll_history.append(sequence_nll(self.startprob_, self.transmat_, self.emissionprob_, sequences))
                 self.monitor_.val_history.append(sequence_nll(self.startprob_, self.transmat_, self.emissionprob_, val_sequences))
-            if prev_bound is not None and abs(total_bound - prev_bound) < self.tol:
+            # relative tolerance: the ELBO is a sum over the whole corpus, so
+            # an absolute threshold would depend on corpus size
+            if prev_bound is not None and abs(total_bound - prev_bound) < self.tol * abs(prev_bound):
                 self.monitor_.converged = True
                 break
             prev_bound = total_bound
@@ -173,7 +183,7 @@ class VariationalBayesHMM:
 
 
 def train_vb_hmm(id_sequences, n_states, vocab_size, n_iter=50, seed=42,
-                  alpha0=1.0, beta0=1.0, pi0=1.0, val_sequences=None):
+                  alpha0=1.0, beta0=0.1, pi0=1.0, val_sequences=None):
     model = VariationalBayesHMM(
         n_components=n_states, n_features=vocab_size, n_iter=n_iter, random_state=seed,
         alpha0=alpha0, beta0=beta0, pi0=pi0,
