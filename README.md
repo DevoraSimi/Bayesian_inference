@@ -123,10 +123,12 @@ for its full option list.
   interface as the MAP-EM HMM (via the posterior mean, which is the Bayesian
   posterior predictive by conjugacy), so it's a drop-in alternative wherever
   the MAP-EM HMM is used.
-- **RNN** (`rnn.py`) — an LSTM language model (PyTorch), trained on the
-  paragraphs concatenated into one stream with truncated BPTT (`--bptt`
-  windows): the hidden state is carried from one window to the next (detached,
-  so gradients stop at the window boundary but the context doesn't), with an optional
+- **RNN** (`rnn.py`) — an LSTM language model (PyTorch), trained and scored
+  one paragraph at a time, like the HMM and n-gram: each paragraph starts
+  from a fresh hidden state with `<eos>` as its first input, so no context
+  crosses paragraph boundaries and every model is scored on exactly the same
+  tokens (`paragraph_batches`: `--batch-size` paragraphs per mini-batch,
+  padded, full backprop through each paragraph), with an optional
   **MC-Dropout** mode (`mc_dropout_predict`, `evaluate_rnn_mc_dropout`) that
   keeps dropout active at inference time and averages multiple stochastic
   passes — an approximate Bayesian treatment of the network's weights (Gal &
