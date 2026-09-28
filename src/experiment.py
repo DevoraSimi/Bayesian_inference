@@ -10,11 +10,11 @@ import torch
 import torch.nn as nn
 
 from checkpoints import save_metrics_checkpoint, save_pickle_checkpoint, save_rnn_checkpoint
-from data_utils import load_split_ids, punctuation_ids
+from data_utils import EOS, load_split_ids, punctuation_ids
 from evaluation import evaluate_hmm, evaluate_ngram, evaluate_rnn, evaluate_rnn_mc_dropout, metrics_to_row, rnn_nll
 from hmm import train_hmm
 from ngram import train_ngram
-from rnn import LSTMLanguageModel, batchify, sentences_to_stream, train_epoch
+from rnn import LSTMLanguageModel, paragraph_batches, train_epoch
 from vb_hmm import train_vb_hmm
 
 RESULT_FIELDS = [
@@ -158,8 +158,8 @@ def run_ngram_sweep(train_ids, val_ids, test_ids, vocab_size, orders_list, alpha
     return results
 
 
-def run_rnn_sweep(train_data, val_data, test_data, vocab_size, hidden_list, layers_list, dropout_list,
-                   embed_size, epochs, bptt, lr, seed, device, punct_ids, checkpoints_dir,
+def run_rnn_sweep(train_ids, val_ids, test_ids, vocab_size, eos_id, hidden_list, layers_list, dropout_list,
+                   embed_size, epochs, batch_size, lr, seed, device, punct_ids, checkpoints_dir,
                    mc_dropout_samples_list=(), patience=5):
     """Sweeps the full grid hidden_size x num_layers x dropout. Each config
     trains for up to `epochs` epochs with early stopping: if val perplexity
@@ -176,7 +176,13 @@ def run_rnn_sweep(train_data, val_data, test_data, vocab_size, hidden_list, laye
     -- same underlying weights, no separate checkpoint saved, just repeated
     re-scoring of the same model at different sample counts, to see how
     many stochastic passes it actually takes before perplexity/accuracy
-    stop changing (i.e. where the averaging has converged)."""
+    stop changing (i.e. where the averaging has converged).
+
+    Every paragraph is trained on and scored from a fresh hidden state
+    (rnn.paragraph_batches), the same rule the HMM and n-gram follow."""
+    # training batches are reshuffled every epoch, below
+    val_batches = paragraph_batches(val_ids, batch_size, eos_id, device)
+    test_batches = paragraph_batches(test_ids, batch_size, eos_id, device)
     results = []
     for hidden_size, num_layers, dropout in itertools.product(hidden_list, layers_list, dropout_list):
         print(f"[RNN] hidden_size={hidden_size} num_layers={num_layers} dropout={dropout}")
@@ -193,12 +199,13 @@ def run_rnn_sweep(train_data, val_data, test_data, vocab_size, hidden_list, laye
         epochs_since_improvement = 0
         start = time.time()
         for epoch in range(1, epochs + 1):
-            train_loss = train_epoch(model, train_data, optimizer, criterion, bptt)
-            epoch_val_metrics = evaluate_rnn(model, val_data, criterion, bptt, punct_ids=punct_ids)
+            train_batches = paragraph_batches(train_ids, batch_size, eos_id, device, shuffle=True, seed=seed + epoch)
+            train_loss = train_epoch(model, train_batches, optimizer, criterion)
+            epoch_val_metrics = evaluate_rnn(model, val_batches, criterion, punct_ids=punct_ids)
             history.append({
                 "epoch": epoch,
                 "train_loss": train_loss,
-                "train_nll": rnn_nll(model, train_data, criterion, bptt),
+                "train_nll": rnn_nll(model, train_batches, criterion),
                 "val_nll": math.log(epoch_val_metrics["perplexity"]),
                 "val_perplexity": epoch_val_metrics["perplexity"],
                 "val_top5_acc": epoch_val_metrics["topk_acc"][5],
@@ -221,8 +228,8 @@ def run_rnn_sweep(train_data, val_data, test_data, vocab_size, hidden_list, laye
 
         model.load_state_dict(best_state)
         optimizer.load_state_dict(best_optimizer_state)
-        val_metrics = evaluate_rnn(model, val_data, criterion, bptt, punct_ids=punct_ids)
-        test_metrics = evaluate_rnn(model, test_data, criterion, bptt, punct_ids=punct_ids)
+        val_metrics = evaluate_rnn(model, val_batches, criterion, punct_ids=punct_ids)
+        test_metrics = evaluate_rnn(model, test_batches, criterion, punct_ids=punct_ids)
         results.append(_row("RNN", hidden_size, train_time, val_metrics, test_metrics,
                              num_layers=num_layers, dropout=dropout))
         print(results[-1])
@@ -230,7 +237,7 @@ def run_rnn_sweep(train_data, val_data, test_data, vocab_size, hidden_list, laye
         config = {
             "model_type": "RNN", "vocab_size": vocab_size, "embed_size": embed_size,
             "hidden_size": hidden_size, "num_layers": num_layers, "dropout": dropout,
-            "bptt": bptt, "epochs": epochs, "best_epoch": best_epoch,
+            "batch_size": batch_size, "epochs": epochs, "best_epoch": best_epoch,
             "early_stopped": len(history) < epochs, "patience": patience,
             "lr": lr, "seed": seed, "train_time_s": round(train_time, 1),
         }
@@ -244,9 +251,9 @@ def run_rnn_sweep(train_data, val_data, test_data, vocab_size, hidden_list, laye
             print(f"[RNN-MCDropout] hidden_size={hidden_size} num_layers={num_layers} dropout={dropout} "
                   f"n_samples={n_samples}")
             mc_start = time.time()
-            mc_val_metrics = evaluate_rnn_mc_dropout(model, val_data, bptt, punct_ids=punct_ids,
+            mc_val_metrics = evaluate_rnn_mc_dropout(model, val_batches, punct_ids=punct_ids,
                                                        n_samples=n_samples)
-            mc_test_metrics = evaluate_rnn_mc_dropout(model, test_data, bptt, punct_ids=punct_ids,
+            mc_test_metrics = evaluate_rnn_mc_dropout(model, test_batches, punct_ids=punct_ids,
                                                         n_samples=n_samples)
             mc_time = time.time() - mc_start
             results.append(_row("RNN-MCDropout", hidden_size, mc_time, mc_val_metrics, mc_test_metrics,
@@ -448,8 +455,7 @@ def main():
                               "(re-scores the RNN's existing weights, so no new .pt is saved, just a .json) "
                               "-- multiplies RNN evaluation cost accordingly, so empty (off) by default. "
                               "e.g. --mc-dropout-samples 5 20 50 to see how many samples it takes to converge")
-    parser.add_argument("--bptt", type=int, default=30)
-    parser.add_argument("--batch-size", type=int, default=20)
+    parser.add_argument("--batch-size", type=int, default=20, help="RNN mini-batch size, in paragraphs")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--skip-ngram", action="store_true", help="skip the n-gram sweep entirely")
@@ -503,14 +509,10 @@ def main():
     rnn_results = []
     if not args.skip_rnn:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        train_data = batchify(sentences_to_stream(train_ids), args.batch_size, device)
-        val_data = batchify(sentences_to_stream(val_ids), args.batch_size, device)
-        test_data = batchify(sentences_to_stream(test_ids), args.batch_size, device)
-
         rnn_results = run_rnn_sweep(
-            train_data, val_data, test_data, vocab_size, args.rnn_hidden, args.rnn_layers, args.rnn_dropout,
-            args.rnn_embed_size, args.rnn_epochs, args.bptt, args.lr, args.seed, device, punct_ids,
-            args.checkpoints_dir, args.mc_dropout_samples, args.rnn_patience,
+            train_ids, val_ids, test_ids, vocab_size, word2id[EOS], args.rnn_hidden, args.rnn_layers,
+            args.rnn_dropout, args.rnn_embed_size, args.rnn_epochs, args.batch_size, args.lr, args.seed, device,
+            punct_ids, args.checkpoints_dir, args.mc_dropout_samples, args.rnn_patience,
         )
 
     all_results = ngram_results + hmm_results + vbhmm_results + rnn_results

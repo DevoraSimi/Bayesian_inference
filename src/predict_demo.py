@@ -26,9 +26,11 @@ def print_suggestions(prefix, word2id, id2word, models, device, k, mc_samples, e
     if models.get("ngram") is not None:
         print(f"  Ngram:  {ngram_suggest(models['ngram'], ids, id2word, k, exclude_ids)}")
     if models.get("rnn") is not None:
-        print(f"  RNN:    {rnn_suggest(models['rnn'], ids, id2word, device, k, exclude_ids)}")
+        # the RNN reads each paragraph starting from <eos> (see rnn.paragraph_batches)
+        rnn_ids = [word2id[EOS]] + ids
+        print(f"  RNN:    {rnn_suggest(models['rnn'], rnn_ids, id2word, device, k, exclude_ids)}")
         if mc_samples:
-            mc = mc_dropout_predict(models["rnn"], ids, id2word, device, k, mc_samples, exclude_ids)
+            mc = mc_dropout_predict(models["rnn"], rnn_ids, id2word, device, k, mc_samples, exclude_ids)
             formatted = ", ".join(f"{w} (p={p:.3f} +/-{s:.3f})" for w, p, s in mc)
             print(f"  RNN MC-Dropout ({mc_samples} samples): {formatted}")
 

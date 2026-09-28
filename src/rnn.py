@@ -1,3 +1,4 @@
+import random
 import torch
 import torch.nn as nn
 
@@ -20,52 +21,75 @@ class LSTMLanguageModel(nn.Module):
         return logits, hidden
 
 
-def sentences_to_stream(id_sequences):
-    """Concatenates the sequences into one stream; each already ends in <eos>
-    (added by data_utils.load_split_ids)."""
-    stream = []
-    for seq in id_sequences:
-        stream.extend(seq)
-    return torch.tensor(stream, dtype=torch.long)
+# target value for padding; nn.CrossEntropyLoss's default ignore_index, so
+# padded positions drop out of the loss without configuring the criterion
+PAD_TARGET = -100
 
 
-def batchify(data, batch_size, device):
-    n_batches = len(data) // batch_size
-    data = data[: n_batches * batch_size]
-    return data.view(batch_size, -1).to(device)
+def paragraph_batches(id_sequences, batch_size, eos_id, device, shuffle=False, seed=0):
+    """Pads paragraphs into mini-batches of `batch_size` paragraphs, one
+    paragraph per row, each row starting from a fresh (zero) hidden state --
+    the same "every paragraph on its own" rule the HMM and n-gram follow, in
+    training and in scoring, so the RNN never sees context from a previous
+    paragraph.
+
+    A row's input is <eos> followed by the paragraph minus its last token,
+    and its target is the whole paragraph (which ends in <eos>, added by
+    data_utils.load_split_ids). So every token is predicted, the first one
+    from <eos> alone -- the paragraph-start context, the RNN's counterpart of
+    the HMM's startprob_ -- and each split is scored on exactly the same
+    tokens as evaluate_hmm/evaluate_ngram. Rows are padded at the end: the
+    LSTM reads left to right, so padding never affects the real positions,
+    and pad targets are PAD_TARGET, which the loss ignores.
+
+    Paragraphs are grouped by length to keep padding small. With shuffle,
+    the grouping and the batch order are randomized (seeded), so each
+    training epoch sees different batches."""
+    order = list(range(len(id_sequences)))
+    if shuffle:
+        rng = random.Random(seed)
+        rng.shuffle(order)
+        # sort by length only within large chunks, so batches still vary
+        chunk = batch_size * 50
+        order = [i for start in range(0, len(order), chunk)
+                 for i in sorted(order[start:start + chunk], key=lambda i: len(id_sequences[i]))]
+    else:
+        order.sort(key=lambda i: len(id_sequences[i]))
+
+    batches = []
+    for start in range(0, len(order), batch_size):
+        seqs = [id_sequences[i] for i in order[start:start + batch_size]]
+        max_len = max(len(seq) for seq in seqs)
+        x = torch.full((len(seqs), max_len), eos_id, dtype=torch.long)
+        y = torch.full((len(seqs), max_len), PAD_TARGET, dtype=torch.long)
+        for row, seq in enumerate(seqs):
+            seq = torch.tensor(seq, dtype=torch.long)
+            x[row, 1:len(seq)] = seq[:-1]
+            y[row, :len(seq)] = seq
+        batches.append((x.to(device), y.to(device)))
+    if shuffle:
+        rng.shuffle(batches)
+    return batches
 
 
-def get_batch(source, i, bptt):
-    seq_len = min(bptt, source.size(1) - 1 - i)
-    x = source[:, i : i + seq_len]
-    y = source[:, i + 1 : i + 1 + seq_len]
-    return x, y
-
-
-def detach_hidden(hidden):
-    """Cuts the graph at a window boundary: the state's values carry over to
-    the next window (each batchify row is contiguous text), but gradients
-    stop here, so BPTT stays truncated at bptt steps."""
-    return tuple(h.detach() for h in hidden)
-
-
-def train_epoch(model, data, optimizer, criterion, bptt, clip=0.25):
+def train_epoch(model, batches, optimizer, criterion, clip=0.25):
+    """batches: from paragraph_batches(..., shuffle=True). Returns the
+    token-weighted average loss, with dropout ON and the weights changing
+    during the epoch -- not comparable to val; see evaluation.rnn_nll."""
     model.train()
     total_loss = 0.0
-    n_batches = 0
-    hidden = None
-    for i in range(0, data.size(1) - 1, bptt):
-        x, y = get_batch(data, i, bptt)
+    total_tokens = 0
+    for x, y in batches:
         optimizer.zero_grad()
-        logits, hidden = model(x, hidden)
-        hidden = detach_hidden(hidden)
+        logits, _ = model(x)
         loss = criterion(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
         optimizer.step()
-        total_loss += loss.item()
-        n_batches += 1
-    return total_loss / n_batches
+        n = (y != PAD_TARGET).sum().item()
+        total_loss += loss.item() * n
+        total_tokens += n
+    return total_loss / total_tokens
 
 
 def _masked(probs, exclude_ids):
@@ -80,6 +104,8 @@ def _masked(probs, exclude_ids):
 
 @torch.no_grad()
 def suggest_next_words(model, prefix_ids, id2word, device, k=5, exclude_ids=()):
+    """prefix_ids should start with <eos>, the paragraph-start input the
+    model is trained with (see paragraph_batches); same for mc_dropout_predict."""
     x = torch.tensor([prefix_ids], dtype=torch.long, device=device)
     logits, _ = model(x) # .eval() so dropout is disabled.
     last_logits = logits[0, -1]

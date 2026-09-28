@@ -194,8 +194,8 @@ Paragraph lengths vary widely: the median paragraph has 29 tokens, the longest 7
 % ============================================================
 
 All four model families are trained and evaluated on the same encoded
-paragraphs, each ending in \texttt{<eos>} (for the RNN, the same
-paragraphs concatenated into one token stream), and share the same
+paragraphs, each ending in \texttt{<eos>} and each processed on its own
+(no model sees context from a previous paragraph), and share the same
 vocabulary, so every model predicts the same tokens and their outputs are directly comparable.
 
 \subsection{$n$-gram model with hierarchical Dirichlet smoothing}
@@ -329,20 +329,23 @@ layers when there are two). Similar contexts can lead to similar hidden
 states, allowing information learned from one context to generalize to
 others rather than relying only on exact count matches.
 
-The paragraphs are concatenated into one stream, split into $B = 20$
-parallel rows (the batch size), and processed in windows of $L = 30$
-tokens (truncated BPTT), so each mini-batch is $B \times L$ tokens. On
-each mini-batch we minimise the cross-entropy loss, which with a single
-true next token is its average negative log-probability,
+Like the HMM and the $n$-gram model, the LSTM processes each paragraph on
+its own: the hidden state starts at zero and the first input is
+\texttt{<eos>} (the paragraph-start context), so every token of the
+paragraph, including the first, is predicted, and no context crosses
+paragraph boundaries. Each mini-batch holds $B = 20$ paragraphs of similar
+length, padded at the end. On each mini-batch we minimise the
+cross-entropy loss, which with a single true next token is its average
+negative log-probability,
 \[
-\mathcal{L}(\theta) = -\frac{1}{BL}\sum_{b=1}^{B}\sum_{t=1}^{L}
-\log P_\theta\big(w^{(b)}_{t+1} \mid w^{(b)}_{\le t}\big),
+\mathcal{L}(\theta) = -\frac{1}{\sum_b T_b}\sum_{b=1}^{B}\sum_{t=1}^{T_b}
+\log P_\theta\big(w^{(b)}_{t} \mid w^{(b)}_{< t}\big),
 \]
-where $w^{(b)}_{\le t}$ denotes the preceding tokens available to the
-model in row $b$, and take one Adam step, with the gradient norm clipped at $0.25$.
-The hidden state at the end of a window is passed on to the next one, so
-the forward context is not limited to the window; only the gradients are cut
-there, so gradients are propagated back at most 30 steps. We stop
+where $T_b$ is the length of paragraph $b$ (padding is excluded) and
+$w^{(b)}_{< t}$ are its preceding tokens, and take one Adam step, with the
+gradient norm clipped at $0.25$. Paragraphs are short (median 29 tokens,
+at most 710, plus \texttt{<eos>}), so gradients are propagated back
+through the whole paragraph. We stop
 early when validation perplexity has not improved for 5 epochs and keep
 the weights of the best epoch. The result is a single point estimate
 $\hat\theta$ of the weights. Implemented in \texttt{src/rnn.py}.
@@ -395,8 +398,9 @@ own notion of ``predict from the prefix seen so far'') across models:
     \item \textbf{Perplexity:} $\exp\!\big(-\tfrac{1}{T}\sum_t \log
     P(w_t \mid w_{<t})\big)$ over all tokens in the evaluation split,
     including each sequence's first token (predicted from an empty/short
-    context -- the $n$-gram model's shortest-available context, or the
-    HMM's initial-state distribution).
+    context -- the $n$-gram model's shortest-available context, the
+    HMM's initial-state distribution, or the LSTM's prediction from
+    \texttt{<eos>} alone).
     \item \textbf{Top-$k$ accuracy}, $k \in \{1, 5, 10\}$: whether the
     true next token is among the model's $k$ highest-probability
     predictions, computed incrementally (predict, then reveal the true
@@ -413,7 +417,12 @@ words-only variant is the more meaningful measure of actual next-word
 prediction quality.
 
 All models are evaluated on the same validation and held-out test
-splits described in Section~2.
+splits described in Section~2, on exactly the same tokens. All models
+process each paragraph independently, as is standard in $n$-gram and HMM
+language modelling, so that differences reflect the model class rather
+than the amount of context available. (Common RNN benchmarks such as
+WikiText instead carry the hidden state across paragraphs, which would
+give the LSTM context the other models never see.)
 
 % ============================================================
 \section{Experimental Design}

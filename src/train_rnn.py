@@ -7,9 +7,9 @@ import torch
 import torch.nn as nn
 
 from checkpoints import load_rnn_training_state, save_rnn_checkpoint, with_ext
-from data_utils import load_split_ids, punctuation_ids
+from data_utils import EOS, load_split_ids, punctuation_ids
 from evaluation import evaluate_rnn, print_eval, rnn_nll
-from rnn import LSTMLanguageModel, batchify, sentences_to_stream, train_epoch
+from rnn import LSTMLanguageModel, paragraph_batches, train_epoch
 
 
 def main():
@@ -20,8 +20,7 @@ def main():
     parser.add_argument("--hidden-size", type=int, default=256)
     parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--dropout", type=float, default=0.2)
-    parser.add_argument("--batch-size", type=int, default=20)
-    parser.add_argument("--bptt", type=int, default=30)
+    parser.add_argument("--batch-size", type=int, default=20, help="mini-batch size, in paragraphs")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=42)
@@ -35,10 +34,11 @@ def main():
     word2id, id2word, train_ids, val_ids, test_ids = load_split_ids(args.data_dir)
     vocab_size = len(word2id)
     punct_ids = punctuation_ids(word2id)
+    eos_id = word2id[EOS]
 
-    train_data = batchify(sentences_to_stream(train_ids), args.batch_size, device)
-    val_data = batchify(sentences_to_stream(val_ids), args.batch_size, device)
-    test_data = batchify(sentences_to_stream(test_ids), args.batch_size, device)
+    # training batches are reshuffled every epoch, below
+    val_batches = paragraph_batches(val_ids, args.batch_size, eos_id, device)
+    test_batches = paragraph_batches(test_ids, args.batch_size, eos_id, device)
 
     config = {
         "model_type": "RNN",
@@ -48,7 +48,6 @@ def main():
         "num_layers": args.num_layers,
         "dropout": args.dropout,
         "batch_size": args.batch_size,
-        "bptt": args.bptt,
         "epochs": args.epochs,
         "lr": args.lr,
         "seed": args.seed,
@@ -74,8 +73,10 @@ def main():
     print(f"training RNN: hidden={args.hidden_size}, layers={args.num_layers}, vocab={vocab_size}")
     start = time.time()
     for epoch in range(start_epoch, args.epochs + 1):
-        train_loss = train_epoch(model, train_data, optimizer, criterion, args.bptt)
-        val_metrics = evaluate_rnn(model, val_data, criterion, args.bptt, punct_ids=punct_ids)
+        train_batches = paragraph_batches(train_ids, args.batch_size, eos_id, device, shuffle=True,
+                                          seed=args.seed + epoch)
+        train_loss = train_epoch(model, train_batches, optimizer, criterion)
+        val_metrics = evaluate_rnn(model, val_batches, criterion, punct_ids=punct_ids)
         print(
             f"epoch {epoch}: train_loss={train_loss:.3f} "
             f"val_ppl={val_metrics['perplexity']:.2f} "
@@ -85,7 +86,7 @@ def main():
         history.append({
             "epoch": epoch,
             "train_loss": train_loss,
-            "train_nll": rnn_nll(model, train_data, criterion, args.bptt),
+            "train_nll": rnn_nll(model, train_batches, criterion),
             "val_nll": math.log(val_metrics["perplexity"]),
             "val_perplexity": val_metrics["perplexity"],
             "val_top5_acc": val_metrics["topk_acc"][5],
@@ -100,8 +101,8 @@ def main():
     train_time = time.time() - start
     print(f"train time: {train_time:.1f}s")
 
-    val_metrics = evaluate_rnn(model, val_data, criterion, args.bptt, punct_ids=punct_ids)
-    test_metrics = evaluate_rnn(model, test_data, criterion, args.bptt, punct_ids=punct_ids)
+    val_metrics = evaluate_rnn(model, val_batches, criterion, punct_ids=punct_ids)
+    test_metrics = evaluate_rnn(model, test_batches, criterion, punct_ids=punct_ids)
     print_eval("test", test_metrics)
 
     config["train_time_s"] = round(train_time, 1)

@@ -10,13 +10,13 @@ import torch
 import torch.nn as nn
 
 from checkpoints import save_rnn_checkpoint
-from data_utils import load_split_ids, punctuation_ids
+from data_utils import EOS, load_split_ids, punctuation_ids
 from evaluation import evaluate_rnn, print_eval, rnn_nll
-from rnn import LSTMLanguageModel, batchify, sentences_to_stream, train_epoch
+from rnn import LSTMLanguageModel, paragraph_batches, train_epoch
 
 
-def make_objective(train_data, val_data, vocab_size, hidden_size, num_layers, punct_ids, bptt, search_epochs,
-                    patience, device, seed):
+def make_objective(train_ids, val_batches, vocab_size, eos_id, hidden_size, num_layers, punct_ids, batch_size,
+                    search_epochs, patience, device, seed):
     """hidden_size/num_layers are FIXED, not searched: if Optuna searched them
     jointly with embed_size/dropout/lr, the winning embed_size/dropout/lr
     would only be validated for whatever specific hidden_size/num_layers
@@ -42,8 +42,9 @@ def make_objective(train_data, val_data, vocab_size, hidden_size, num_layers, pu
         best_val_ppl = float("inf")
         best_epoch = 0
         for epoch in range(1, search_epochs + 1):
-            train_epoch(model, train_data, optimizer, criterion, bptt)
-            val_ppl = evaluate_rnn(model, val_data, criterion, bptt, punct_ids=punct_ids)["perplexity"]
+            train_batches = paragraph_batches(train_ids, batch_size, eos_id, device, shuffle=True, seed=seed + epoch)
+            train_epoch(model, train_batches, optimizer, criterion)
+            val_ppl = evaluate_rnn(model, val_batches, criterion, punct_ids=punct_ids)["perplexity"]
             if val_ppl < best_val_ppl:
                 best_val_ppl = val_ppl
                 best_epoch = epoch
@@ -125,8 +126,7 @@ def main():
                          help="stop each search trial and the final retrain early if val perplexity hasn't "
                               "improved for this many epochs; trials are scored by, and the saved checkpoint "
                               "uses, the best epoch, not the last")
-    parser.add_argument("--bptt", type=int, default=30)
-    parser.add_argument("--batch-size", type=int, default=20)
+    parser.add_argument("--batch-size", type=int, default=20, help="mini-batch size, in paragraphs")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -136,10 +136,11 @@ def main():
     word2id, id2word, train_ids, val_ids, test_ids = load_split_ids(args.data_dir)
     vocab_size = len(word2id)
     punct_ids = punctuation_ids(word2id)
+    eos_id = word2id[EOS]
 
-    train_data = batchify(sentences_to_stream(train_ids), args.batch_size, device)
-    val_data = batchify(sentences_to_stream(val_ids), args.batch_size, device)
-    test_data = batchify(sentences_to_stream(test_ids), args.batch_size, device)
+    # training batches are reshuffled every epoch, below
+    val_batches = paragraph_batches(val_ids, args.batch_size, eos_id, device)
+    test_batches = paragraph_batches(test_ids, args.batch_size, eos_id, device)
 
     results_dir = Path(args.results_dir)
     trials_csv = results_dir / "optuna_trials.csv"
@@ -152,8 +153,8 @@ def main():
     print(f"each trial's result is appended to {trials_csv} as it finishes")
     sampler = optuna.samplers.TPESampler(seed=args.seed)
     study = optuna.create_study(direction="minimize", sampler=sampler)
-    objective = make_objective(train_data, val_data, vocab_size, args.hidden_size, args.num_layers,
-                                punct_ids, args.bptt, args.search_epochs, args.patience, device, args.seed)
+    objective = make_objective(train_ids, val_batches, vocab_size, eos_id, args.hidden_size, args.num_layers,
+                                punct_ids, args.batch_size, args.search_epochs, args.patience, device, args.seed)
     study.optimize(objective, n_trials=args.n_trials, callbacks=[trial_logger])
 
     print(f"\nbest trial: val_perplexity={study.best_value:.2f}")
@@ -181,8 +182,10 @@ def main():
     epochs_since_improvement = 0
     start = time.time()
     for epoch in range(1, args.final_epochs + 1):
-        train_loss = train_epoch(model, train_data, optimizer, criterion, args.bptt)
-        val_metrics = evaluate_rnn(model, val_data, criterion, args.bptt, punct_ids=punct_ids)
+        train_batches = paragraph_batches(train_ids, args.batch_size, eos_id, device, shuffle=True,
+                                          seed=args.seed + epoch)
+        train_loss = train_epoch(model, train_batches, optimizer, criterion)
+        val_metrics = evaluate_rnn(model, val_batches, criterion, punct_ids=punct_ids)
         print(
             f"epoch {epoch}: train_loss={train_loss:.3f} "
             f"val_ppl={val_metrics['perplexity']:.2f} "
@@ -192,7 +195,7 @@ def main():
         history.append({
             "epoch": epoch,
             "train_loss": train_loss,
-            "train_nll": rnn_nll(model, train_data, criterion, args.bptt),
+            "train_nll": rnn_nll(model, train_batches, criterion),
             "val_nll": math.log(val_metrics["perplexity"]),
             "val_perplexity": val_metrics["perplexity"],
             "val_top5_acc": val_metrics["topk_acc"][5],
@@ -217,8 +220,8 @@ def main():
     model.load_state_dict(best_state)
     optimizer.load_state_dict(best_optimizer_state)
 
-    val_metrics = evaluate_rnn(model, val_data, criterion, args.bptt, punct_ids=punct_ids)
-    test_metrics = evaluate_rnn(model, test_data, criterion, args.bptt, punct_ids=punct_ids)
+    val_metrics = evaluate_rnn(model, val_batches, criterion, punct_ids=punct_ids)
+    test_metrics = evaluate_rnn(model, test_batches, criterion, punct_ids=punct_ids)
     print_eval("test", test_metrics)
 
     config = {
@@ -229,7 +232,6 @@ def main():
         "num_layers": args.num_layers,
         "dropout": best["dropout"],
         "batch_size": args.batch_size,
-        "bptt": args.bptt,
         "epochs": args.final_epochs,
         "best_epoch": best_epoch,
         "early_stopped": len(history) < args.final_epochs,

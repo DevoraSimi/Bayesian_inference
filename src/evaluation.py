@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from rnn import detach_hidden, get_batch
+from rnn import PAD_TARGET
 
 
 class TopKAccumulator:
@@ -26,14 +26,15 @@ class TopKAccumulator:
         self.n_predictions += 1
         self.n_word_predictions += is_word
 
-    def update_batch(self, correct_per_k, word_mask):
+    def update_batch(self, correct_per_k, scored_mask, word_mask):
         """RNN path: correct_per_k[k] is a bool tensor, True where the true
-        token appeared in that position's top-k."""
+        token appeared in that position's top-k; only positions in
+        scored_mask count (word_mask is the words-only subset of it)."""
         for k in self.k_list:
             hit_k = correct_per_k[k]
-            self.hits_all[k] += hit_k.sum().item()
+            self.hits_all[k] += (hit_k & scored_mask).sum().item()
             self.hits_words[k] += (hit_k & word_mask).sum().item()
-        self.n_predictions += word_mask.numel()
+        self.n_predictions += scored_mask.sum().item()
         self.n_word_predictions += word_mask.sum().item()
 
     def finalize(self, perplexity):
@@ -121,46 +122,50 @@ def evaluate_ngram(model, id_sequences, k_list=(1, 5, 10), punct_ids=frozenset()
     return acc.finalize(perplexity)
 
 
+def _update_topk_batch(acc, scores, y, punct_ids):
+    """Top-k update for one padded batch; scores are logits or probabilities
+    (same ranking). Skips padding and each paragraph's first token (column
+    0), matching evaluate_hmm/evaluate_ngram, which don't score "predict the
+    very first word from nothing" for top-k either."""
+    scored = y != PAD_TARGET
+    scored[:, 0] = False
+    word_mask = scored
+    if punct_ids:
+        punct_tensor = torch.tensor(sorted(punct_ids), dtype=torch.long, device=y.device)
+        word_mask = scored & ~torch.isin(y, punct_tensor)
+    topk = scores.topk(max(acc.k_list), dim=-1).indices
+    correct = (topk == y.unsqueeze(-1))
+    correct_per_k = {k: correct[..., :k].any(-1) for k in acc.k_list}
+    acc.update_batch(correct_per_k, scored, word_mask)
+
+
 @torch.no_grad()
-def evaluate_rnn(model, data, criterion, bptt, k_list=(1, 5, 10), punct_ids=frozenset()):
-    """Reports top-k accuracy both over all tokens and restricted to
+def evaluate_rnn(model, batches, criterion, k_list=(1, 5, 10), punct_ids=frozenset()):
+    """batches: from rnn.paragraph_batches -- each paragraph scored on its
+    own from a fresh hidden state, like evaluate_hmm/evaluate_ngram, so all
+    models are scored on the same tokens under the same rule. criterion
+    must ignore PAD_TARGET (nn.CrossEntropyLoss() does by default).
+    Reports top-k accuracy both over all tokens and restricted to
     positions where the true next token isn't in punct_ids (real words only)."""
     model.eval()
     total_loss = 0.0
     total_tokens = 0
     acc = TopKAccumulator(k_list)
-    punct_tensor = (
-        torch.tensor(sorted(punct_ids), dtype=torch.long, device=data.device)
-        if punct_ids else None
-    )
 
-    hidden = None
-    for i in range(0, data.size(1) - 1, bptt):
-        x, y = get_batch(data, i, bptt)
-        logits, hidden = model(x, hidden)
-        hidden = detach_hidden(hidden)
+    for x, y in batches:
+        logits, _ = model(x)
         loss = criterion(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
-        n = y.numel()
+        n = (y != PAD_TARGET).sum().item()
         total_loss += loss.item() * n
         total_tokens += n
+        _update_topk_batch(acc, logits, y, punct_ids)
 
-        if punct_tensor is not None:
-            word_mask = ~torch.isin(y, punct_tensor)
-        else:
-            word_mask = torch.ones_like(y, dtype=torch.bool)
-
-        topk = logits.topk(max(k_list), dim=-1).indices
-        correct = (topk == y.unsqueeze(-1))
-        correct_per_k = {k: correct[..., :k].any(-1) for k in k_list}
-        acc.update_batch(correct_per_k, word_mask)
-
-    avg_loss = total_loss / total_tokens
-    perplexity = torch.exp(torch.tensor(avg_loss)).item()
+    perplexity = float(np.exp(total_loss / total_tokens))
     return acc.finalize(perplexity)
 
 
 @torch.no_grad()
-def rnn_nll(model, data, criterion, bptt):
+def rnn_nll(model, batches, criterion):
     """Average per-token NLL (nats) in eval mode (dropout off, fixed weights)
     -- the same scoring as evaluate_rnn's perplexity (log of it), minus the
     top-k work. Used for per-epoch train NLL, since train_epoch's returned
@@ -169,19 +174,17 @@ def rnn_nll(model, data, criterion, bptt):
     model.eval()
     total_loss = 0.0
     total_tokens = 0
-    hidden = None
-    for i in range(0, data.size(1) - 1, bptt):
-        x, y = get_batch(data, i, bptt)
-        logits, hidden = model(x, hidden)
-        hidden = detach_hidden(hidden)
+    for x, y in batches:
+        logits, _ = model(x)
         loss = criterion(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
-        total_loss += loss.item() * y.numel()
-        total_tokens += y.numel()
+        n = (y != PAD_TARGET).sum().item()
+        total_loss += loss.item() * n
+        total_tokens += n
     return total_loss / total_tokens
 
 
 @torch.no_grad()
-def evaluate_rnn_mc_dropout(model, data, bptt, k_list=(1, 5, 10), punct_ids=frozenset(), n_samples=20):
+def evaluate_rnn_mc_dropout(model, batches, k_list=(1, 5, 10), punct_ids=frozenset(), n_samples=20):
     """Like evaluate_rnn, but keeps dropout ACTIVE (model.train()) and
     averages n_samples stochastic forward passes' softmax probabilities per
     batch before scoring -- MC Dropout as a cheap approximate-Bayesian
@@ -199,38 +202,21 @@ def evaluate_rnn_mc_dropout(model, data, bptt, k_list=(1, 5, 10), punct_ids=froz
     total_log_prob = 0.0
     total_tokens = 0
     acc = TopKAccumulator(k_list)
-    punct_tensor = (
-        torch.tensor(sorted(punct_ids), dtype=torch.long, device=data.device)
-        if punct_ids else None
-    )
 
-    # one carried state per MC sample, so each sample's context comes only
-    # from its own earlier passes
-    hiddens = [None] * n_samples
-    for i in range(0, data.size(1) - 1, bptt):
-        x, y = get_batch(data, i, bptt)
-
+    for x, y in batches:
         prob_sum = None
-        for s in range(n_samples):
-            logits, hidden = model(x, hiddens[s])
-            hiddens[s] = detach_hidden(hidden)
+        for _ in range(n_samples):
+            logits, _ = model(x)
             probs = torch.softmax(logits, dim=-1)
             prob_sum = probs if prob_sum is None else prob_sum + probs
         mean_probs = prob_sum / n_samples
 
-        true_probs = mean_probs.gather(-1, y.unsqueeze(-1)).squeeze(-1)
-        total_log_prob += torch.log(true_probs).sum().item()
-        total_tokens += y.numel()
-
-        if punct_tensor is not None:
-            word_mask = ~torch.isin(y, punct_tensor)
-        else:
-            word_mask = torch.ones_like(y, dtype=torch.bool)
-
-        topk = mean_probs.topk(max(k_list), dim=-1).indices
-        correct = (topk == y.unsqueeze(-1))
-        correct_per_k = {k: correct[..., :k].any(-1) for k in k_list}
-        acc.update_batch(correct_per_k, word_mask)
+        real = y != PAD_TARGET
+        # clamp so padding gathers a valid index; those positions are masked out
+        true_probs = mean_probs.gather(-1, y.clamp(min=0).unsqueeze(-1)).squeeze(-1)
+        total_log_prob += torch.log(true_probs[real]).sum().item()
+        total_tokens += real.sum().item()
+        _update_topk_batch(acc, mean_probs, y, punct_ids)
 
     model.train(was_training)
 
