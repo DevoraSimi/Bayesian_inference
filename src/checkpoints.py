@@ -105,7 +105,7 @@ def _save_metadata(path, config, metrics, history=None, val_history=None, train_
         "val_history": val_history or [],
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
-    with_ext(path, ".json").write_text(json.dumps(metadata, indent=2))
+    with_ext(path, ".json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
 
 def load_metadata(path):
@@ -113,7 +113,7 @@ def load_metadata(path):
     so topk_acc/topk_acc_words dicts (naturally keyed by int k) get their
     keys restored to ints here, once, so every caller can rely on int keys
     whether metrics came fresh from evaluate_*() or were reloaded from disk."""
-    metadata = json.loads(with_ext(path, ".json").read_text())
+    metadata = json.loads(with_ext(path, ".json").read_text(encoding="utf-8"))
     for split_metrics in metadata.get("metrics", {}).values():
         if not split_metrics:
             continue

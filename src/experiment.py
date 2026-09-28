@@ -130,7 +130,8 @@ def run_vbhmm_beta0_sweep(train_ids, val_ids, test_ids, vocab_size, n_states, be
     return results
 
 
-def run_ngram_sweep(train_ids, val_ids, test_ids, vocab_size, orders_list, alpha_list, punct_ids, checkpoints_dir):
+def run_ngram_sweep(train_ids, val_ids, test_ids, vocab_size, eos_id, orders_list, alpha_list, punct_ids,
+                    checkpoints_dir):
     """Sweeps the grid order x alpha. alpha is the Dirichlet smoothing
     concentration -- how strongly the prior pulls each context's predictions
     toward the next-shorter context's -- as much a parameter worth
@@ -139,7 +140,7 @@ def run_ngram_sweep(train_ids, val_ids, test_ids, vocab_size, orders_list, alpha
     for order, alpha in itertools.product(orders_list, alpha_list):
         print(f"[Ngram] order={order} alpha={alpha}")
         start = time.time()
-        model = train_ngram(train_ids, order, vocab_size, alpha)
+        model = train_ngram(train_ids, order, vocab_size, eos_id, alpha)
         train_time = time.time() - start
 
         val_metrics = evaluate_ngram(model, val_ids, punct_ids=punct_ids)
@@ -288,13 +289,13 @@ def save_csv(results, path):
     path = Path(path)
     merged = {}
     if path.exists():
-        with open(path, newline="") as f:
+        with open(path, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 merged[_csv_row_key(row)] = row
     for r in results:
         merged[_csv_row_key(r)] = {k: r.get(k, "") for k in RESULT_FIELDS}
 
-    with open(path, "w", newline="") as f:
+    with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=RESULT_FIELDS)
         writer.writeheader()
         writer.writerows(merged.values())
@@ -477,7 +478,7 @@ def main():
     ngram_results = []
     if not args.skip_ngram:
         ngram_results = run_ngram_sweep(
-            train_ids, val_ids, test_ids, vocab_size, args.ngram_orders, args.ngram_alpha,
+            train_ids, val_ids, test_ids, vocab_size, word2id[EOS], args.ngram_orders, args.ngram_alpha,
             punct_ids, args.checkpoints_dir,
         )
 

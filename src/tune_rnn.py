@@ -67,14 +67,14 @@ def make_trial_logger(path, n_trials):
     crashes partway through doesn't lose every trial completed so far."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as f:
+    with open(path, "w", newline="", encoding="utf-8") as f:
         csv.DictWriter(f, fieldnames=TRIAL_FIELDS).writeheader()
 
     def callback(study, trial):
         row = {"trial": trial.number, "val_perplexity": trial.value,
                "best_epoch": trial.user_attrs.get("best_epoch")}
         row.update(trial.params)
-        with open(path, "a", newline="") as f:
+        with open(path, "a", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=TRIAL_FIELDS).writerow(row)
         print(f"  [trial {trial.number + 1}/{n_trials}] val_perplexity={trial.value:.2f} "
               f"(best epoch {row['best_epoch']}) params={trial.params}")
