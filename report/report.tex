@@ -232,27 +232,38 @@ prior concentration $\alpha$.
 
 \subsection{Hidden Markov Model (point estimate)}
 
-A discrete-emission (categorical) HMM with $N$ latent states models a
-paragraph as a Markov chain of unobserved states
-$z_1, \dots, z_T$ that emit the observed word sequence
-$w_1, \dots, w_T$, parameterized by:
-\begin{itemize}
-    \item initial-state distribution $\pi \in \Delta^{N-1}$,
-    \item transition matrix $A \in \mathbb{R}^{N \times N}$ (row-stochastic),
-    \item emission matrix $B \in \mathbb{R}^{N \times V}$ (row-stochastic).
-\end{itemize}
-Parameters are fit by Baum-Welch (EM): the E-step computes state
-posteriors $\gamma_t(i) = P(z_t = i \mid w_{1:T})$ and pairwise transition
-posteriors via the scaled forward-backward algorithm; the M-step
-re-estimates $\pi, A, B$ from these expected sufficient statistics, with a
-small additive (Dirichlet-style) smoothing constant added to every count
-to avoid degenerate zero probabilities. This yields \emph{point} (MAP)
-estimates of $\pi, A, B$ -- a single number per parameter, with no
-representation of estimation uncertainty. Training terminates on an
-iteration cap or when the total data log-likelihood changes by less than
-a tolerance. Implemented from scratch in \texttt{src/hmm.py} (exposing the
-same attribute names as \texttt{hmmlearn} for interchangeability with the
-Bayesian variant below).
+Instead of a fixed window of $n-1$ words, an HMM carries the whole
+history as a belief over $N$ hidden states. Each word $w_t$ is emitted by
+a hidden state $z_t$, with initial distribution $\pi$, transitions
+$A_{ij} = P(z_{t+1} = j \mid z_t = i)$ and emissions
+$B_{jw} = P(w_t = w \mid z_t = j)$.
+
+The states are unobserved, so we track
+$\alpha_t(j) = P(z_t = j \mid w_{1:t})$ with the forward algorithm:
+\[
+\alpha_t(j) = \frac{1}{c_t}\, B_{j w_t} \sum_i \alpha_{t-1}(i) A_{ij},
+\qquad c_t = P(w_t \mid w_{1:t-1}),
+\]
+starting from $\alpha_1(j) \propto \pi_j B_{j w_1}$. The normaliser $c_t$
+prevents underflow and gives $\log P(w_{1:T}) = \sum_t \log c_t$. To
+predict the next word we move the belief one step forward and emit:
+$P(w_{t+1} = w \mid w_{1:t}) = \sum_{i,j} \alpha_t(i) A_{ij} B_{jw}$.
+
+We train with Baum-Welch (EM). The E-step uses forward-backward to get
+the expected state and transition counts,
+$\gamma_t(i) = P(z_t = i \mid w_{1:T})$ and
+$\xi_t(i,j) = P(z_t = i, z_{t+1} = j \mid w_{1:T})$. The M-step normalises
+these counts, plus a pseudo-count $\epsilon = 10^{-3}$, e.g.
+\(
+A_{ij} = \frac{\sum_t \xi_t(i,j) + \epsilon}{\sum_{t<T} \gamma_t(i) + N\epsilon},
+\)
+and likewise for $B$ and $\pi$. Without $\epsilon$, a word a state never
+emitted in training would get probability zero. This is a MAP estimate
+under a Dirichlet$(1+\epsilon)$ prior: a single point estimate of
+$\pi, A, B$ with no uncertainty, which the VB-HMM below addresses.
+Parameters are initialised at random (identical states would never
+separate), and EM finds only a local optimum. Implemented in
+\texttt{src/hmm.py}.
 
 \textbf{Hyperparameters explored:} number of latent states $N$.
 

@@ -2,6 +2,7 @@ import argparse
 import copy
 import csv
 import itertools
+import math
 import time
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import torch.nn as nn
 
 from checkpoints import save_metrics_checkpoint, save_pickle_checkpoint, save_rnn_checkpoint
 from data_utils import load_split_ids, punctuation_ids
-from evaluation import evaluate_hmm, evaluate_ngram, evaluate_rnn, evaluate_rnn_mc_dropout, metrics_to_row
+from evaluation import evaluate_hmm, evaluate_ngram, evaluate_rnn, evaluate_rnn_mc_dropout, metrics_to_row, rnn_nll
 from hmm import train_hmm
 from ngram import train_ngram
 from rnn import LSTMLanguageModel, batchify, sentences_to_stream, train_epoch
@@ -71,6 +72,7 @@ def run_hmm_sweep(train_ids, val_ids, test_ids, vocab_size, states_list, n_iter,
             model, config, {"val": val_metrics, "test": test_metrics},
             Path(checkpoints_dir) / f"hmm_{n_states}",
             history=model.monitor_.history, val_history=model.monitor_.val_history,
+            train_nll_history=model.monitor_.train_nll_history,
         )
     return results
 
@@ -102,6 +104,7 @@ def run_vbhmm_sweep(train_ids, val_ids, test_ids, vocab_size, states_list, n_ite
             model, config, {"val": val_metrics, "test": test_metrics},
             Path(checkpoints_dir) / f"vbhmm_{n_states}",
             history=model.monitor_.history, val_history=model.monitor_.val_history,
+            train_nll_history=model.monitor_.train_nll_history,
         )
     return results
 
@@ -173,6 +176,8 @@ def run_rnn_sweep(train_data, val_data, test_data, vocab_size, hidden_list, laye
             history.append({
                 "epoch": epoch,
                 "train_loss": train_loss,
+                "train_nll": rnn_nll(model, train_data, criterion, bptt),
+                "val_nll": math.log(epoch_val_metrics["perplexity"]),
                 "val_perplexity": epoch_val_metrics["perplexity"],
                 "val_top5_acc": epoch_val_metrics["topk_acc"][5],
                 "val_top5_acc_words": epoch_val_metrics["topk_acc_words"][5],

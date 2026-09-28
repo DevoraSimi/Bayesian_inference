@@ -1,4 +1,5 @@
 import numpy as np
+from data_utils import top_k_words
 
 
 def sequence_nll(startprob, transmat, emissionprob, sequences):
@@ -30,6 +31,7 @@ class ConvergenceMonitor:
         self.converged = False
         self.iter = 0
         self.history = []
+        self.train_nll_history = []
         self.val_history = []
 
 
@@ -42,12 +44,12 @@ class CategoricalHMM:
     """
 
     def __init__(self, n_components, n_features, n_iter=30, tol=1e-2, random_state=42, smoothing=1e-3):
-        self.n_components = n_components
-        self.n_features = n_features
-        self.n_iter = n_iter
-        self.tol = tol
+        self.n_components = n_components # number of hidden states
+        self.n_features = n_features # vocab size
+        self.n_iter = n_iter # number of EM iterations
+        self.tol = tol # convergence threshold for log-likelihood change
         self.random_state = random_state
-        self.smoothing = smoothing
+        self.smoothing = smoothing # additive smoothing for start/trans/emission probabilities
         self.monitor_ = ConvergenceMonitor()
 
     def _init_params(self):
@@ -67,8 +69,8 @@ class CategoricalHMM:
         """Scaled forward-backward for one sequence. Returns per-position state
         posteriors (gamma), summed pairwise transition posteriors (xi_sum),
         and the sequence's log-likelihood."""
-        T = len(obs)
-        N = self.n_components
+        T = len(obs) # sequence length
+        N = self.n_components # number of hidden states
         A = self.transmat_
         B = self.emissionprob_
 
@@ -136,6 +138,9 @@ class CategoricalHMM:
             self.monitor_.iter = iteration
             self.monitor_.history.append(total_ll)
             if val_sequences is not None:
+                # train scored the same way as val (same post-M-step params, same
+                # function), unlike total_ll, which used the pre-M-step params
+                self.monitor_.train_nll_history.append(sequence_nll(self.startprob_, self.transmat_, self.emissionprob_, sequences))
                 self.monitor_.val_history.append(sequence_nll(self.startprob_, self.transmat_, self.emissionprob_, val_sequences))
             if prev_ll is not None and abs(total_ll - prev_ll) < self.tol:
                 self.monitor_.converged = True
@@ -174,7 +179,5 @@ def next_word_distribution(model, obs_ids):
     return next_state_dist @ model.emissionprob_
 
 
-def suggest_next_words(model, prefix_ids, id2word, k=5):
-    dist = next_word_distribution(model, prefix_ids)
-    top_idx = np.argsort(-dist)[:k]
-    return [(id2word[i], float(dist[i])) for i in top_idx]
+def suggest_next_words(model, prefix_ids, id2word, k=5, exclude_ids=()):
+    return top_k_words(next_word_distribution(model, prefix_ids), id2word, k, exclude_ids)

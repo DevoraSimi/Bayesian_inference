@@ -102,8 +102,11 @@ for its full option list.
   exactly the Bayesian posterior predictive for one draw; rare contexts fall back
   smoothly to shorter ones. `order` and `α` (total prior mass) are both swept.
 - **HMM** (`hmm.py`) — a from-scratch categorical HMM trained with Baum-Welch
-  (MAP-EM): the forward-backward algorithm plus M-step point estimates with
-  light Dirichlet smoothing, implemented without `hmmlearn`.
+  (MAP-EM): scaled forward-backward in the E-step, then M-step point estimates
+  `(expected count + ε)/(expected total + K·ε)` with `ε = 1e-3` (a MAP estimate
+  under a Dirichlet(1+ε) prior), implemented without `hmmlearn`. Parameters
+  start at random so the states can break symmetry; EM stops after `--n-iter`
+  iterations or when the training log-likelihood changes by less than `tol`.
 - **VB-HMM** (`vb_hmm.py`) — the same model made fully Bayesian: Dirichlet
   *posterior distributions* (not point estimates) over the initial-state,
   transition, and emission distributions, fit by mean-field Variational Bayes
@@ -146,7 +149,7 @@ src/
 
   experiment.py                  full parameter sweep across all models
   list_checkpoints.py             tabular summary of every saved checkpoint
-  plot_history.py                  training-loss curves from saved history
+  plot_history.py                  train vs. val NLL curves (HMM, VB-HMM, RNN)
   predict_demo.py                   live next-word suggestions from any
                                      trained model(s), with optional MC-Dropout
 
@@ -167,6 +170,15 @@ Every model is scored with:
   predictions — reported both over *all* tokens and restricted to real words only
   (excluding punctuation tokens), since punctuation is highly predictable and
   otherwise inflates the "all tokens" number.
+
+**Loss curves** (`plot_history.py` → `results/loss_curves.png`): after every EM
+iteration (HMM, VB-HMM) or epoch (RNN), both train and val are scored as average
+NLL per token (nats), with the same function, in eval mode, on the same
+parameters, so train vs. val (and model vs. model) are directly comparable. This
+is deliberately *not* the training objective: the HMM's `history` uses the
+pre-M-step parameters, the VB-HMM's is the ELBO data term, and the RNN's
+`train_loss` is averaged with dropout on while the weights change. Checkpoints
+saved before this was added have no train NLL and are skipped; retrain them.
 
 `experiment.py`'s RNN sweep and `tune_rnn.py`'s final retrain both use early
 stopping (tracking the best validation-perplexity epoch and restoring those

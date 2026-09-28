@@ -48,7 +48,8 @@ def main():
 
     out_path = Path(args.checkpoints_dir) / f"hmm_{args.n_states}"
     save_pickle_checkpoint(model, config, metrics, out_path,
-                            history=model.monitor_.history, val_history=model.monitor_.val_history)
+                            history=model.monitor_.history, val_history=model.monitor_.val_history,
+                            train_nll_history=model.monitor_.train_nll_history)
     print(f"saved checkpoint: {out_path}.pkl + {out_path}.json")
 
 

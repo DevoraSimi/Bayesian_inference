@@ -158,6 +158,25 @@ def evaluate_rnn(model, data, criterion, bptt, k_list=(1, 5, 10), punct_ids=froz
 
 
 @torch.no_grad()
+def rnn_nll(model, data, criterion, bptt):
+    """Average per-token NLL (nats) in eval mode (dropout off, fixed weights)
+    -- the same scoring as evaluate_rnn's perplexity (log of it), minus the
+    top-k work. Used for per-epoch train NLL, since train_epoch's returned
+    loss is averaged with dropout ON while the weights are still changing,
+    so it isn't comparable to val."""
+    model.eval()
+    total_loss = 0.0
+    total_tokens = 0
+    for i in range(0, data.size(1) - 1, bptt):
+        x, y = get_batch(data, i, bptt)
+        logits, _ = model(x)
+        loss = criterion(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
+        total_loss += loss.item() * y.numel()
+        total_tokens += y.numel()
+    return total_loss / total_tokens
+
+
+@torch.no_grad()
 def evaluate_rnn_mc_dropout(model, data, bptt, k_list=(1, 5, 10), punct_ids=frozenset(), n_samples=20):
     """Like evaluate_rnn, but keeps dropout ACTIVE (model.train()) and
     averages n_samples stochastic forward passes' softmax probabilities per

@@ -17,7 +17,7 @@ def with_ext(path, ext):
     return Path(str(path) + ext)
 
 
-def save_pickle_checkpoint(model, config, metrics, path, history=None, val_history=None):
+def save_pickle_checkpoint(model, config, metrics, path, history=None, val_history=None, train_nll_history=None):
     """Saves any plain-Python/NumPy model (MAP-EM HMM, VB-HMM, n-gram -- not
     the torch RNN, see save_rnn_checkpoint) to <path>.pkl via pickle, plus
     its run config + metrics + training/validation history to <path>.json."""
@@ -25,7 +25,7 @@ def save_pickle_checkpoint(model, config, metrics, path, history=None, val_histo
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(with_ext(path, ".pkl"), "wb") as f:
         pickle.dump(model, f)
-    _save_metadata(path, config, metrics, history, val_history)
+    _save_metadata(path, config, metrics, history, val_history, train_nll_history)
 
 
 def save_metrics_checkpoint(config, metrics, path):
@@ -92,11 +92,12 @@ def _build_rnn(cfg, device):
     ).to(device)
 
 
-def _save_metadata(path, config, metrics, history=None, val_history=None):
+def _save_metadata(path, config, metrics, history=None, val_history=None, train_nll_history=None):
     metadata = {
         "config": config,
         "metrics": metrics,
         "history": history or [],
+        "train_nll_history": train_nll_history or [],
         "val_history": val_history or [],
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
