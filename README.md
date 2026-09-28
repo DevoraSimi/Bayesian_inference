@@ -69,8 +69,11 @@ python3 src/tune_rnn.py --hidden-size 128 --num-layers 1 --n-trials 20
 #    (n-gram order & alpha, HMM/VB-HMM states, RNN hidden/layers/dropout, and
 #    optionally MC-Dropout at various sample counts), saving a checkpoint,
 #    metrics, and training-loss history for every configuration.
+#    --vbhmm-beta0-sweep (optional) retrains VB-HMM at the best-val n_states
+#    with each emission prior beta0 given, to show the prior's effect.
 python3 src/experiment.py \
   --hmm-states 4 8 16 32 64 --vbhmm-states 4 8 16 32 64 \
+  --vbhmm-beta0-sweep 0.01 0.1 1 \
   --ngram-orders 2 3 4 --ngram-alpha 10 30 100 \
   --rnn-hidden 64 128 256 --rnn-layers 1 2 --rnn-dropout 0.2 --rnn-epochs 15 \
   --mc-dropout-samples 5 20 50
@@ -113,7 +116,9 @@ for its full option list.
   EM. States start from random data-scale pseudo-counts (a near-uniform start
   never breaks symmetry: all states stay identical). The emission prior
   defaults to `beta0 = 0.1` per word: 1.0 adds ~V pseudo-counts to every state
-  and pulls them all toward uniform. Exposes the same
+  and pulls them all toward uniform. Training maximises the ELBO (data term
+  minus the Dirichlet KL to the prior), which never decreases, and stops when
+  its relative change is below `tol = 1e-4`. Exposes the same
   interface as the MAP-EM HMM (via the posterior mean, which is the Bayesian
   posterior predictive by conjugacy), so it's a drop-in alternative wherever
   the MAP-EM HMM is used.
@@ -176,7 +181,7 @@ iteration (HMM, VB-HMM) or epoch (RNN), both train and val are scored as average
 NLL per token (nats), with the same function, in eval mode, on the same
 parameters, so train vs. val (and model vs. model) are directly comparable. This
 is deliberately *not* the training objective: the HMM's `history` uses the
-pre-M-step parameters, the VB-HMM's is the ELBO data term, and the RNN's
+pre-M-step parameters, the VB-HMM's is the ELBO, and the RNN's
 `train_loss` is averaged with dropout on while the weights change. Checkpoints
 saved before this was added have no train NLL and are skipped; retrain them.
 
