@@ -63,7 +63,8 @@ python3 src/train_rnn.py --hidden-size 256 --epochs 10
 # 3. (Optional) search for good RNN hyperparameters before the full sweep --
 #    only embed_size/dropout/lr are searched; hidden_size/num_layers are fixed
 #    so the result stays valid when the sweep below varies them.
-python3 src/tune_rnn.py --hidden-size 128 --num-layers 1 --n-trials 20
+#    Each trial early-stops (--patience) and is scored by its best epoch.
+python3 src/tune_rnn.py --hidden-size 128 --num-layers 1 --n-trials 50 --search-epochs 40 --final-epochs 50
 
 # 4. Run the full comparison: sweeps every model across its own parameters
 #    (n-gram order & alpha, HMM/VB-HMM states, RNN hidden/layers/dropout, and

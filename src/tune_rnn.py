@@ -16,14 +16,19 @@ from rnn import LSTMLanguageModel, batchify, sentences_to_stream, train_epoch
 
 
 def make_objective(train_data, val_data, vocab_size, hidden_size, num_layers, punct_ids, bptt, search_epochs,
-                    device, seed):
+                    patience, device, seed):
     """hidden_size/num_layers are FIXED, not searched: if Optuna searched them
     jointly with embed_size/dropout/lr, the winning embed_size/dropout/lr
     would only be validated for whatever specific hidden_size/num_layers
     combo they happened to be paired with in that trial -- not a safe thing
     to then reuse while varying hidden_size/num_layers in a separate sweep.
     Fixing them here to one representative architecture keeps the searched
-    embed_size/dropout/lr meaningfully reusable across that later sweep."""
+    embed_size/dropout/lr meaningfully reusable across that later sweep.
+
+    Each trial uses the same early stopping as the final retrain and is scored
+    by its BEST epoch's val perplexity, not its last: otherwise a long
+    search_epochs scores every trial well past its overfitting point, which
+    rewards configs that overfit slowly rather than ones that fit best."""
     def objective(trial):
         embed_size = trial.suggest_categorical("embed_size", [64, 128, 256])
         dropout = trial.suggest_float("dropout", 0.0, 0.5)
@@ -34,16 +39,24 @@ def make_objective(train_data, val_data, vocab_size, hidden_size, num_layers, pu
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         criterion = nn.CrossEntropyLoss()
 
-        for _ in range(search_epochs):
+        best_val_ppl = float("inf")
+        best_epoch = 0
+        for epoch in range(1, search_epochs + 1):
             train_epoch(model, train_data, optimizer, criterion, bptt)
+            val_ppl = evaluate_rnn(model, val_data, criterion, bptt, punct_ids=punct_ids)["perplexity"]
+            if val_ppl < best_val_ppl:
+                best_val_ppl = val_ppl
+                best_epoch = epoch
+            elif epoch - best_epoch >= patience:
+                break
 
-        val_metrics = evaluate_rnn(model, val_data, criterion, bptt, punct_ids=punct_ids)
-        return val_metrics["perplexity"]
+        trial.set_user_attr("best_epoch", best_epoch)
+        return best_val_ppl
 
     return objective
 
 
-TRIAL_FIELDS = ["trial", "val_perplexity", "embed_size", "dropout", "lr"]
+TRIAL_FIELDS = ["trial", "val_perplexity", "best_epoch", "embed_size", "dropout", "lr"]
 
 
 def make_trial_logger(path, n_trials):
@@ -57,11 +70,13 @@ def make_trial_logger(path, n_trials):
         csv.DictWriter(f, fieldnames=TRIAL_FIELDS).writeheader()
 
     def callback(study, trial):
-        row = {"trial": trial.number, "val_perplexity": trial.value}
+        row = {"trial": trial.number, "val_perplexity": trial.value,
+               "best_epoch": trial.user_attrs.get("best_epoch")}
         row.update(trial.params)
         with open(path, "a", newline="") as f:
             csv.DictWriter(f, fieldnames=TRIAL_FIELDS).writerow(row)
-        print(f"  [trial {trial.number + 1}/{n_trials}] val_perplexity={trial.value:.2f} params={trial.params}")
+        print(f"  [trial {trial.number + 1}/{n_trials}] val_perplexity={trial.value:.2f} "
+              f"(best epoch {row['best_epoch']}) params={trial.params}")
 
     return callback
 
@@ -102,12 +117,14 @@ def main():
     parser.add_argument("--num-layers", type=int, default=1, help="fixed, not searched (see --hidden-size)")
     parser.add_argument("--n-trials", type=int, default=20)
     parser.add_argument("--search-epochs", type=int, default=5,
-                         help="epochs per trial during the search -- kept short since it runs n_trials times")
+                         help="max epochs per trial during the search (early stopping with --patience may "
+                              "stop sooner) -- kept short since it runs n_trials times")
     parser.add_argument("--final-epochs", type=int, default=20,
                          help="max epochs to retrain the best found config for, with full history saved")
     parser.add_argument("--patience", type=int, default=5,
-                         help="stop the final retrain early if val perplexity hasn't improved for this many "
-                              "epochs; the saved checkpoint uses the best epoch's weights, not the last")
+                         help="stop each search trial and the final retrain early if val perplexity hasn't "
+                              "improved for this many epochs; trials are scored by, and the saved checkpoint "
+                              "uses, the best epoch, not the last")
     parser.add_argument("--bptt", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
@@ -128,14 +145,15 @@ def main():
     trials_csv = results_dir / "optuna_trials.csv"
     trial_logger = make_trial_logger(trials_csv, args.n_trials)
 
-    print(f"searching {args.n_trials} trials, {args.search_epochs} epochs each, "
+    print(f"searching {args.n_trials} trials, up to {args.search_epochs} epochs each "
+          f"(early stopping: patience={args.patience}), "
           f"at fixed hidden_size={args.hidden_size} num_layers={args.num_layers} "
-          f"(short runs, no checkpoints saved per trial)")
+          f"(no checkpoints saved per trial)")
     print(f"each trial's result is appended to {trials_csv} as it finishes")
     sampler = optuna.samplers.TPESampler(seed=args.seed)
     study = optuna.create_study(direction="minimize", sampler=sampler)
     objective = make_objective(train_data, val_data, vocab_size, args.hidden_size, args.num_layers,
-                                punct_ids, args.bptt, args.search_epochs, device, args.seed)
+                                punct_ids, args.bptt, args.search_epochs, args.patience, device, args.seed)
     study.optimize(objective, n_trials=args.n_trials, callbacks=[trial_logger])
 
     print(f"\nbest trial: val_perplexity={study.best_value:.2f}")

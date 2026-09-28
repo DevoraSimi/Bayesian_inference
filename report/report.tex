@@ -349,9 +349,10 @@ $\hat\theta$ of the weights. Implemented in \texttt{src/rnn.py}.
 
 \textbf{Hyperparameters explored:} in two steps. First, embedding size,
 dropout and learning rate are tuned with Optuna's TPE
-sampler~\cite{akiba2019} (\texttt{src/tune\_rnn.py}): 20 trials of 5
-epochs each, scored by validation perplexity, then the best configuration
-is retrained for up to 20 epochs. The search runs at a fixed hidden size
+sampler~\cite{akiba2019} (\texttt{src/tune\_rnn.py}): 50 trials of up to
+40 epochs each, with the same early stopping, each scored by its best
+validation perplexity; the best configuration is then retrained for up
+to 50 epochs. The search runs at a fixed hidden size
 (128) and one layer. Second, with those three values fixed, a grid
 over hidden size and number of layers (\texttt{src/experiment.py}).
 
