@@ -100,8 +100,9 @@ def evaluate_hmm(model, id_sequences, k_list=(1, 5, 10), punct_ids=frozenset()):
 
 def evaluate_ngram(model, id_sequences, k_list=(1, 5, 10), punct_ids=frozenset()):
     """Perplexity is computed over every token (including each sequence's
-    first, using whatever short/empty context is available -- the n-gram
-    equivalent of the HMM's startprob_ contribution). Top-k accuracy only
+    first, predicted from the model's paragraph-start context, which
+    NgramModel adds itself -- the n-gram equivalent of the HMM's startprob_
+    contribution). Top-k accuracy only
     counts tokens with i > 0, matching evaluate_hmm/evaluate_rnn's
     convention of not scoring "predict the very first word from nothing"."""
     total_log_prob = 0.0

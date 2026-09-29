@@ -397,10 +397,11 @@ own notion of ``predict from the prefix seen so far'') across models:
 \begin{itemize}
     \item \textbf{Perplexity:} $\exp\!\big(-\tfrac{1}{T}\sum_t \log
     P(w_t \mid w_{<t})\big)$ over all tokens in the evaluation split,
-    including each sequence's first token (predicted from an empty/short
-    context -- the $n$-gram model's shortest-available context, the
-    HMM's initial-state distribution, or the LSTM's prediction from
-    \texttt{<eos>} alone).
+    including each sequence's first token, which every model predicts
+    from a learned paragraph-start distribution: the HMM's initial-state
+    distribution, and for the $n$-gram model and the LSTM the
+    distribution after a \texttt{<eos>} start token (the usual
+    \texttt{<s>} of $n$-gram models).
     \item \textbf{Top-$k$ accuracy}, $k \in \{1, 5, 10\}$: whether the
     true next token is among the model's $k$ highest-probability
     predictions, computed incrementally (predict, then reveal the true

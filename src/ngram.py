@@ -28,33 +28,43 @@ class NgramModel:
     per-word pseudo-count: larger alpha trusts the shorter context more.
 
     order=2 is a bigram model (1 word of context), order=3 a trigram
-    (2 words of context), etc. Near the start of a sequence, the longest
-    available context is used.
+    (2 words of context), etc. Each paragraph is preceded by `start_id`
+    (<eos>, the same paragraph-start token the RNN reads), as context only:
+    the first word is predicted from P(w | <eos>), a learned paragraph-start
+    distribution like the HMM's startprob_, not from the unigram.
     """
 
-    def __init__(self, order, vocab_size, alpha=1.0):
+    def __init__(self, order, vocab_size, start_id, alpha=1.0):
         self.order = order
         self.vocab_size = vocab_size
+        self.start_id = start_id
         self.alpha = alpha
         self.context_counts = defaultdict(Counter)
         self.context_totals = defaultdict(int)
 
     def fit(self, id_sequences):
         # counts for every context length 0..order-1 at every position, since
-        # each level of the hierarchy is estimated from its own counts
+        # each level of the hierarchy is estimated from its own counts; the
+        # start token is context only, never counted as a predicted word
         ctx_len = self.order - 1
         for seq in id_sequences:
-            for i, word in enumerate(seq):
+            padded = [self.start_id] + list(seq)
+            for i in range(1, len(padded)):
+                word = padded[i]
                 for k in range(min(i, ctx_len) + 1):
-                    context = tuple(seq[i - k:i])
+                    context = tuple(padded[i - k:i])
                     self.context_counts[context][word] += 1
                     self.context_totals[context] += 1
         return self
 
     def next_word_distribution(self, context):
-        """context: a sequence of word ids (only the last order-1 are used)."""
-        ctx_len = min(self.order - 1, len(context))
-        context = tuple(context[len(context) - ctx_len:])
+        """context: the paragraph's word ids so far (only the last order-1
+        are used); start_id is prepended when fewer are available, as in fit."""
+        max_ctx = self.order - 1
+        context = tuple(context[max(0, len(context) - max_ctx):])
+        if len(context) < max_ctx:
+            context = (self.start_id,) + context
+        ctx_len = len(context)
 
         alpha = self.alpha
         dist = np.full(self.vocab_size, 1.0 / self.vocab_size)
@@ -71,8 +81,8 @@ class NgramModel:
         return dist
 
 
-def train_ngram(id_sequences, order, vocab_size, alpha=1.0):
-    return NgramModel(order, vocab_size, alpha).fit(id_sequences)
+def train_ngram(id_sequences, order, vocab_size, start_id, alpha=1.0):
+    return NgramModel(order, vocab_size, start_id, alpha).fit(id_sequences)
 
 
 def suggest_next_words(model, prefix_ids, id2word, k=5, exclude_ids=()):

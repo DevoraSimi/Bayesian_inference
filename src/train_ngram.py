@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 
 from checkpoints import save_pickle_checkpoint
-from data_utils import load_split_ids, punctuation_ids
+from data_utils import EOS, load_split_ids, punctuation_ids
 from evaluation import evaluate_ngram, print_eval
 from ngram import train_ngram
 
@@ -23,7 +23,7 @@ def main():
 
     print(f"training {args.order}-gram: vocab={vocab_size}, alpha={args.alpha}")
     start = time.time()
-    model = train_ngram(train_ids, args.order, vocab_size, args.alpha)
+    model = train_ngram(train_ids, args.order, vocab_size, word2id[EOS], args.alpha)
     train_time = time.time() - start
     print(f"train time: {train_time:.1f}s, distinct contexts: {len(model.context_counts)}")
 
