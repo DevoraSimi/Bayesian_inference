@@ -75,7 +75,7 @@ python3 src/tune_rnn.py --hidden-size 128 --num-layers 1 --n-trials 50 --search-
 python3 src/experiment.py \
   --hmm-states 4 8 16 32 64 --vbhmm-states 4 8 16 32 64 \
   --vbhmm-beta0-sweep 0.01 0.1 1 \
-  --ngram-orders 2 3 4 --ngram-alpha 10 30 100 \
+  --ngram-orders 2 3 4 --ngram-alpha 30 100 300 \
   --rnn-hidden 64 128 256 --rnn-layers 1 2 --rnn-dropout 0.2 --rnn-epochs 15 \
   --mc-dropout-samples 5 20 50
 
@@ -89,7 +89,7 @@ python3 src/plot_history.py
 #    <unk>/<eos> are never suggested; add --no-punct to suggest words only.
 python3 src/predict_demo.py \
   --hmm-checkpoint checkpoints/hmm_16 --vbhmm-checkpoint checkpoints/vbhmm_16 \
-  --ngram-checkpoint checkpoints/ngram_3_a30.0 --rnn-checkpoint checkpoints/rnn_256 \
+  --ngram-checkpoint checkpoints/ngram_3_a30.0 --rnn-checkpoint checkpoints/rnn_h256_l2_d0.293 \
   --mc-dropout 50 --text "Sherlock Holmes said that"
 ```
 
@@ -105,6 +105,11 @@ for its full option list.
   mean of a Dirichlet prior centred on the next-shorter context, and by conjugacy
   exactly the Bayesian posterior predictive for one draw; rare contexts fall back
   smoothly to shorter ones. `order` and `α` (total prior mass) are both swept.
+  `α` can be one shared value or one per level (`train_ngram.py --order 3 --alpha 100 100 300`,
+  unigram level first). `experiment.py` sweeps it greedily: each order reuses the
+  previous order's best alphas for its lower levels and sweeps only its own
+  top-level α. Per-level α gave no gain over a shared α=100 (val perplexity
+  116.16 vs 115.89), so a single shared α is enough.
 - **HMM** (`hmm.py`) — a from-scratch categorical HMM trained with Baum-Welch
   (MAP-EM): scaled forward-backward in the E-step, then M-step point estimates
   `(expected count + ε)/(expected total + K·ε)` with `ε = 1e-3` (a MAP estimate

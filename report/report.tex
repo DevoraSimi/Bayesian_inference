@@ -40,7 +40,7 @@ point-estimate neural baseline and, via Monte Carlo Dropout, as an
 approximate Bayesian neural model with predictive uncertainty. All models
 are evaluated on held-out perplexity and top-$k$ next-word accuracy, the
 latter reported both over all tokens and restricted to real words (i.e.\
-excluding punctuation tokens). This report documents the problem
+excluding punctuation and end-of-paragraph tokens). This report documents the problem
 formulation, data pipeline, and modeling/evaluation methodology.
 \emph{Experimental results are not yet included.}
 \end{abstract}
@@ -91,6 +91,8 @@ A secondary, applied framing of the same task is a \textbf{predictive-text
 / autocomplete demo}: given a typed prefix, suggest the top-$k$ most
 likely next words under each trained model (and, for the RNN, an
 uncertainty estimate per suggestion via MC Dropout).
+Instructions for reproducing every experiment and running the demo
+(\texttt{src/predict\_demo.py}) are in the repository's \texttt{README.md}.
 
 % ============================================================
 \section{Data}
@@ -170,7 +172,9 @@ Test & 8 & 2{,}077 & 118{,}608 & 3.53\% \\
 \bottomrule
 \end{tabular}
 \caption{Split sizes (60 narrative units in total; vocabulary of 11{,}108
-entries, minimum training count 2).}
+entries, minimum training count 2). Token counts include one
+\texttt{<eos>} per paragraph, and \texttt{<unk>} rates are computed over
+these counts.}
 \label{tab:splits}
 \end{table}
 
@@ -209,18 +213,22 @@ $c(h_k, w) = \sum_t \mathbf{1}\big[(w_{t-k}, \dots, w_{t-1}) = h_k,\ w_t = w\big
 the number of times $w$ followed $h_k$ in training, with
 $c(h_k) = \sum_w c(h_k, w)$. Then
 \[
-P_k(w \mid h_k) = \frac{c(h_k, w) + \alpha\, P_{k-1}(w \mid h_{k-1})}
-{c(h_k) + \alpha}, \qquad P_{-1}(w) = \frac{1}{V},
+P_k(w \mid h_k) = \frac{c(h_k, w) + \alpha_k\, P_{k-1}(w \mid h_{k-1})}
+{c(h_k) + \alpha_k}, \qquad P_{-1}(w) = \frac{1}{V},
 \]
 so the trigram estimate is pulled toward the bigram, the bigram toward the
 unigram, and the unigram toward uniform. This is the posterior mean (and,
 by conjugacy, the posterior predictive) under a prior
-$\theta_{h_k} \sim \text{Dirichlet}\big(\alpha\, P_{k-1}(\cdot \mid
-h_{k-1})\big)$ on each context's next-word distribution.
+$\theta_{h_k} \sim \text{Dirichlet}\big(\alpha_k\, P_{k-1}(\cdot \mid
+h_{k-1})\big)$ on each context's next-word distribution, with one
+concentration $\alpha_k$ per context length $k$.
 
-Here $\alpha$ is the prior's total pseudo-count mass: a context's own
-counts get weight $c(h_k)/(c(h_k) + \alpha)$, so frequent contexts follow
+Here $\alpha_k$ is the prior's total pseudo-count mass: a context's own
+counts get weight $c(h_k)/(c(h_k) + \alpha_k)$, so frequent contexts follow
 their data while rare or unseen ones fall back on the shorter context.
+Separate levels get separate concentrations because longer contexts are
+rarer: a single shared $\alpha$ large enough to smooth sparse trigram
+contexts would also over-smooth the much better-estimated bigram level.
 Plain additive smoothing is the special case where every context is
 smoothed straight toward uniform; with it, rare trigram contexts fall
 back to a near-random guess, and a trigram model did worse than a bigram.
@@ -229,7 +237,13 @@ but it sees only the last $n-1$ words and cannot generalise across
 similar contexts. Implemented in \texttt{src/ngram.py}.
 
 \textbf{Hyperparameters explored:} order $n$ (context length) and the
-prior concentration $\alpha$.
+per-level concentrations $\alpha_k$, each searched over $\{10, 30, 100\}$.
+Because $\alpha_k$ is a
+total pseudo-count rather than a per-word one, values of order 1 or below
+would make a context seen only once put most of its mass on the single
+word that followed it; values in the tens to hundreds let rare contexts
+rely mostly on the shorter context while frequent contexts keep their
+own counts.
 
 \subsection{Hidden Markov Model (point estimate)}
 
@@ -264,8 +278,10 @@ counts. The resulting model is a point estimate of $\pi$, $A$, and $B$,
 with no posterior uncertainty over these parameters, which the VB-HMM
 below addresses.
 Parameters are randomly initialised to break symmetry between the
-hidden states, and EM finds only a local optimum. Implemented in
-\texttt{src/hmm.py}.
+hidden states, and EM finds only a local optimum. Training stops when
+the relative change of the training log-likelihood is below $10^{-4}$
+(the same criterion as the VB-HMM below), or after at most 100
+iterations. Implemented in \texttt{src/hmm.py}.
 
 \textbf{Hyperparameters explored:} number of latent states $N$.
 
@@ -291,7 +307,8 @@ $\hat\alpha_{ij} / \sum_k \hat\alpha_{ik}$, but for small counts it is
 smaller, so rare transitions,
 emissions and states are down-weighted automatically. Training maximises
 the ELBO, $\sum_t \log \widetilde{c}_t - \mathrm{KL}(q \,\|\, p)$, which
-never decreases, and stops when its relative change is below $10^{-4}$.
+never decreases, and stops when its relative change is below $10^{-4}$
+or after at most 100 iterations.
 For prediction we use the posterior mean
 $\hat\alpha_{ij} / \sum_k \hat\alpha_{ik}$, so the model plugs into the
 same forward filter as the HMM. Implemented in \texttt{src/vb\_hmm.py}.
@@ -413,9 +430,20 @@ Because punctuation tokens are highly predictable from local context (and
 would inflate accuracy for any model that learns punctuation patterns
 well), top-$k$ accuracy is reported \textbf{twice}: once over all tokens,
 and once restricted to positions whose true next token is a real word
-(i.e.\ excluding the punctuation subset of the vocabulary). The
+(i.e.\ excluding the punctuation subset of the vocabulary and
+\texttt{<eos>}). The
 words-only variant is the more meaningful measure of actual next-word
 prediction quality.
+
+\texttt{<unk>} is treated as an ordinary token by every model: it is
+trained on, predicted, and scored in both perplexity and top-$k$ accuracy
+(where it counts as a word), as in standard benchmarks such as WikiText.
+Since validation and test contain roughly three times as many
+\texttt{<unk>} tokens as training (Table~\ref{tab:splits}), and
+\texttt{<unk>} is comparatively easy to predict, this should be kept in
+mind when comparing validation/test scores with training scores. The
+same rule applies to every model, so model-to-model comparisons remain
+like-for-like.
 
 All models are evaluated on the same validation and held-out test
 splits described in Section~2, on exactly the same tokens. All models
@@ -435,9 +463,14 @@ weights/parameters, training config, and validation/test metrics) per
 configuration for reproducibility:
 
 \begin{itemize}
-    \item \textbf{$n$-gram:} grid over order $n \in \{2, 3\}$ $\times$
-    prior concentration $\alpha \in \{10, 30, 100\}$ (defaults of
-    \texttt{experiment.py}).
+    \item \textbf{$n$-gram:} orders $n \in \{2, 3\}$, with the per-level
+    concentrations tuned one level at a time: the bigram sweeps
+    $\alpha \in \{10, 30, 100\}$ (shared by its unigram and bigram levels;
+    the unigram level's value barely matters, as its single context holds
+    almost all training tokens), and the trigram keeps the best bigram's
+    lower-level concentrations and sweeps only its new trigram-level
+    concentration over the same values. This costs the same number of runs as a single shared
+    $\alpha$ while letting each level find its own value.
     \item \textbf{HMM and VB-HMM:} grid over number of latent states,
     with the \emph{same} state-count grid used for both, enabling a
     direct MAP-EM vs.\ VB-EM comparison at matched capacity; VB-HMM prior
@@ -472,7 +505,7 @@ comparison table of best validation/test perplexity and top-1/top-5
 accuracy (all-tokens and words-only) per model family, matching the
 fields already logged to \texttt{results/comparison.csv}; (2)
 per-family sweep plots -- perplexity vs.\ number of states (HMM,
-VB-HMM), vs.\ order (n-gram, by $\alpha$), and vs.\ hidden size (RNN, by
+VB-HMM), vs.\ top-level concentration (n-gram, by order), and vs.\ hidden size (RNN, by
 layers/dropout); (3) the MC-Dropout sample-count convergence plot; (4)
 the Optuna search plot and best hyperparameters found
 (\texttt{results/optuna\_trials.csv}, \texttt{results/optuna\_search.png}); and
@@ -485,7 +518,7 @@ accuracy across all four model families.}
 \toprule
 Model & Config & Val.\ PPL & Test PPL & Top-1 acc.\ (words) & Top-5 acc.\ (words) \\
 \midrule
-$n$-gram & \TODO{best (order, $\alpha$)} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+$n$-gram & \TODO{best (order, $\alpha_k$)} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
 HMM & \TODO{best $N$} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
 VB-HMM & \TODO{best $N$} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
 LSTM & \TODO{best config} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
