@@ -1,5 +1,0 @@
-model,param,train_time_s,val_perplexity,test_perplexity,test_top1_acc,test_top5_acc
-HMM,16,135.8,242.73,247.43,0.1127,0.2701
-HMM,32,442.2,221.56,224.89,0.1154,0.2791
-HMM,64,1627.4,226.98,231.8,0.1194,0.2811
-RNN,256,11.7,94.73,96.9,0.1898,0.4068
