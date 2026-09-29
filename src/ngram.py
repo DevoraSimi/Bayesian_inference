@@ -15,7 +15,7 @@ class NgramModel:
     down to P_{-1}(w) = 1/V (uniform). Each context's next-word distribution
     gets a Dirichlet prior with concentration `alpha` centred on the
     next-shorter context's distribution (trigram -> bigram -> unigram ->
-    uniform), 
+    uniform).
 
     Centring the prior on the shorter context rather than on uniform is what
     makes higher orders usable: for a rare or unseen context (count ~ 0) the

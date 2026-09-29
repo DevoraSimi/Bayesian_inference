@@ -13,7 +13,7 @@ def main():
     parser.add_argument("--data-dir", default="data/processed")
     parser.add_argument("--checkpoints-dir", default="checkpoints")
     parser.add_argument("--order", type=int, default=3, help="2=bigram, 3=trigram, ...")
-    parser.add_argument("--alpha", type=float, nargs="+", default=[30.0],
+    parser.add_argument("--alpha", type=float, nargs="+", default=[100.0],
                         help="total Dirichlet prior mass pulling each context toward the next-shorter one: "
                              "one value shared by all levels, or one per level, unigram level first "
                              "(e.g. --order 3 --alpha 100 100 300)")

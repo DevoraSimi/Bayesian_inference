@@ -43,11 +43,13 @@ class CategoricalHMM:
     implementation trained the model.
     """
 
-    def __init__(self, n_components, n_features, n_iter=30, tol=1e-2, random_state=42, smoothing=1e-3):
+    def __init__(self, n_components, n_features, n_iter=200, tol=1e-4, random_state=42, smoothing=1e-3,
+                 tol_patience=3):
         self.n_components = n_components # number of hidden states
         self.n_features = n_features # vocab size
         self.n_iter = n_iter # number of EM iterations
-        self.tol = tol # convergence threshold for log-likelihood change
+        self.tol = tol # relative log-likelihood change threshold for convergence
+        self.tol_patience = tol_patience # consecutive below-tol iterations needed to declare convergence
         self.random_state = random_state
         self.smoothing = smoothing # additive smoothing for start/trans/emission probabilities
         self.monitor_ = ConvergenceMonitor()
@@ -110,6 +112,7 @@ class CategoricalHMM:
         self._init_params()
         N, V = self.n_components, self.n_features
         prev_ll = None
+        below_tol = 0
 
         for iteration in range(1, self.n_iter + 1):
             start_num = np.zeros(N)
@@ -142,15 +145,23 @@ class CategoricalHMM:
                 # function), unlike total_ll, which used the pre-M-step params
                 self.monitor_.train_nll_history.append(sequence_nll(self.startprob_, self.transmat_, self.emissionprob_, sequences))
                 self.monitor_.val_history.append(sequence_nll(self.startprob_, self.transmat_, self.emissionprob_, val_sequences))
-            if prev_ll is not None and abs(total_ll - prev_ll) < self.tol:
-                self.monitor_.converged = True
-                break
+            # relative tolerance, as in VBHMM: total_ll is a sum over the whole
+            # corpus, so an absolute threshold would depend on corpus size.
+            # Requires tol_patience consecutive small steps, so one noisy dip
+            # below tol doesn't end training while the LL is still climbing
+            if prev_ll is not None and abs(total_ll - prev_ll) < self.tol * abs(prev_ll):
+                below_tol += 1
+                if below_tol >= self.tol_patience:
+                    self.monitor_.converged = True
+                    break
+            else:
+                below_tol = 0
             prev_ll = total_ll
 
         return self
 
 
-def train_hmm(id_sequences, n_states, vocab_size, n_iter=50, seed=42, val_sequences=None):
+def train_hmm(id_sequences, n_states, vocab_size, n_iter=200, seed=42, val_sequences=None):
     model = CategoricalHMM(
         n_components=n_states,
         n_features=vocab_size,

@@ -13,7 +13,7 @@ def main():
     parser.add_argument("--data-dir", default="data/processed")
     parser.add_argument("--checkpoints-dir", default="checkpoints")
     parser.add_argument("--n-states", type=int, default=16)
-    parser.add_argument("--n-iter", type=int, default=30)
+    parser.add_argument("--n-iter", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 

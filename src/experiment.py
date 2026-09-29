@@ -459,7 +459,7 @@ def main():
                          help="n_states for --vbhmm-beta0-sweep; defaults to the VB-HMM n_states with the lowest "
                               "val perplexity in this run")
     parser.add_argument("--ngram-orders", type=int, nargs="+", default=[2, 3])
-    parser.add_argument("--ngram-alpha", type=float, nargs="+", default=[10.0, 30.0, 100.0],
+    parser.add_argument("--ngram-alpha", type=float, nargs="+", default=[30.0, 100.0, 300.0],
                         help="values tried for each order's new top level; lower levels keep the previous "
                              "order's best (see run_ngram_sweep)")
     parser.add_argument("--rnn-hidden", type=int, nargs="+", default=[64, 128, 256])

@@ -13,7 +13,7 @@ def main():
     parser.add_argument("--data-dir", default="data/processed")
     parser.add_argument("--checkpoints-dir", default="checkpoints")
     parser.add_argument("--n-states", type=int, default=16)
-    parser.add_argument("--n-iter", type=int, default=30)
+    parser.add_argument("--n-iter", type=int, default=200)
     parser.add_argument("--alpha0", type=float, default=1.0, help="Dirichlet prior concentration for transitions")
     parser.add_argument("--beta0", type=float, default=0.1,
                         help="Dirichlet prior concentration for emissions. Smaller values encourage sparsity in the emission distributions")

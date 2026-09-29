@@ -45,12 +45,13 @@ class VariationalBayesHMM:
     distribution, next_word_distribution, suggest_next_words, evaluate_hmm).
     """
 
-    def __init__(self, n_components, n_features, n_iter=30, tol=1e-4, random_state=42,
-                 alpha0=1.0, beta0=0.1, pi0=1.0):
+    def __init__(self, n_components, n_features, n_iter=200, tol=1e-4, random_state=42,
+                 alpha0=1.0, beta0=0.1, pi0=1.0, tol_patience=3):
         self.n_components = n_components
         self.n_features = n_features
         self.n_iter = n_iter
         self.tol = tol  # relative ELBO change threshold for convergence
+        self.tol_patience = tol_patience  # consecutive below-tol iterations needed to declare convergence
         self.random_state = random_state
         self.alpha0 = alpha0
         self.beta0 = beta0
@@ -123,6 +124,7 @@ class VariationalBayesHMM:
         self._init_posteriors(sum(len(obs) for obs in sequences))
         N, V = self.n_components, self.n_features
         prev_bound = None
+        below_tol = 0
 
         for iteration in range(1, self.n_iter + 1):
             pi_tilde, A_tilde, B_tilde = self._expected_probs()
@@ -161,10 +163,16 @@ class VariationalBayesHMM:
                 self.monitor_.train_nll_history.append(sequence_nll(self.startprob_, self.transmat_, self.emissionprob_, sequences))
                 self.monitor_.val_history.append(sequence_nll(self.startprob_, self.transmat_, self.emissionprob_, val_sequences))
             # relative tolerance: the ELBO is a sum over the whole corpus, so
-            # an absolute threshold would depend on corpus size
+            # an absolute threshold would depend on corpus size. Requires
+            # tol_patience consecutive small steps, so one noisy dip below tol
+            # doesn't end training while the ELBO is still climbing
             if prev_bound is not None and abs(total_bound - prev_bound) < self.tol * abs(prev_bound):
-                self.monitor_.converged = True
-                break
+                below_tol += 1
+                if below_tol >= self.tol_patience:
+                    self.monitor_.converged = True
+                    break
+            else:
+                below_tol = 0
             prev_bound = total_bound
 
         return self
@@ -182,7 +190,7 @@ class VariationalBayesHMM:
         return self.B_post / self.B_post.sum(axis=1, keepdims=True)
 
 
-def train_vb_hmm(id_sequences, n_states, vocab_size, n_iter=50, seed=42,
+def train_vb_hmm(id_sequences, n_states, vocab_size, n_iter=200, seed=42,
                   alpha0=1.0, beta0=0.1, pi0=1.0, val_sequences=None):
     model = VariationalBayesHMM(
         n_components=n_states, n_features=vocab_size, n_iter=n_iter, random_state=seed,
