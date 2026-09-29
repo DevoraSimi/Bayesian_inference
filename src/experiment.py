@@ -13,7 +13,7 @@ from checkpoints import save_metrics_checkpoint, save_pickle_checkpoint, save_rn
 from data_utils import EOS, load_split_ids, punctuation_ids
 from evaluation import evaluate_hmm, evaluate_ngram, evaluate_rnn, evaluate_rnn_mc_dropout, metrics_to_row, rnn_nll
 from hmm import train_hmm
-from ngram import train_ngram
+from ngram import alpha_tag, train_ngram
 from rnn import LSTMLanguageModel, paragraph_batches, train_epoch
 from vb_hmm import train_vb_hmm
 
@@ -132,30 +132,47 @@ def run_vbhmm_beta0_sweep(train_ids, val_ids, test_ids, vocab_size, n_states, be
 
 def run_ngram_sweep(train_ids, val_ids, test_ids, vocab_size, eos_id, orders_list, alpha_list, punct_ids,
                     checkpoints_dir):
-    """Sweeps the grid order x alpha. alpha is the Dirichlet smoothing
-    concentration -- how strongly the prior pulls each context's predictions
-    toward the next-shorter context's -- as much a parameter worth
-    experimenting with as order."""
+    """Tunes one Dirichlet concentration per level, a level at a time (the
+    same stagewise idea as the VB-HMM states -> beta0 sweep): orders run
+    from smallest to largest, and each order sweeps alpha_list only for its
+    NEW levels, keeping the lower levels at the best (lowest val
+    perplexity) per-level alphas of the previous order. So the trigram's
+    bigram and unigram levels are the best bigram's, and only the trigram
+    level is searched -- the same number of runs as a single shared alpha,
+    but each level gets its own value (longer contexts are rarer and
+    usually want more smoothing). The smallest order has no previous one,
+    so all its levels share each alpha (the unigram level's alpha barely
+    matters: its one context has ~all training tokens). Rows' `alpha` is
+    the top level's value; the full per-level list is in the checkpoint
+    config."""
     results = []
-    for order, alpha in itertools.product(orders_list, alpha_list):
-        print(f"[Ngram] order={order} alpha={alpha}")
-        start = time.time()
-        model = train_ngram(train_ids, order, vocab_size, eos_id, alpha)
-        train_time = time.time() - start
+    best_alphas = ()
+    for order in sorted(orders_list):
+        order_results = []
+        for alpha in alpha_list:
+            alphas = best_alphas + (alpha,) * (order - len(best_alphas))
+            print(f"[Ngram] order={order} alphas={alphas}")
+            start = time.time()
+            model = train_ngram(train_ids, order, vocab_size, eos_id, alphas)
+            train_time = time.time() - start
 
-        val_metrics = evaluate_ngram(model, val_ids, punct_ids=punct_ids)
-        test_metrics = evaluate_ngram(model, test_ids, punct_ids=punct_ids)
-        results.append(_row("Ngram", order, train_time, val_metrics, test_metrics, alpha=alpha))
-        print(results[-1])
+            val_metrics = evaluate_ngram(model, val_ids, punct_ids=punct_ids)
+            test_metrics = evaluate_ngram(model, test_ids, punct_ids=punct_ids)
+            row = _row("Ngram", order, train_time, val_metrics, test_metrics, alpha=alpha)
+            results.append(row)
+            order_results.append((row["val_perplexity"], alphas))
+            print(row)
 
-        config = {
-            "model_type": "Ngram", "order": order, "alpha": alpha, "vocab_size": vocab_size,
-            "train_time_s": round(train_time, 1), "n_contexts": len(model.context_counts),
-        }
-        save_pickle_checkpoint(
-            model, config, {"val": val_metrics, "test": test_metrics},
-            Path(checkpoints_dir) / f"ngram_{order}_a{alpha}",
-        )
+            config = {
+                "model_type": "Ngram", "order": order, "alpha": list(alphas), "vocab_size": vocab_size,
+                "train_time_s": round(train_time, 1), "n_contexts": len(model.context_counts),
+            }
+            save_pickle_checkpoint(
+                model, config, {"val": val_metrics, "test": test_metrics},
+                Path(checkpoints_dir) / f"ngram_{order}_a{alpha_tag(alphas)}",
+            )
+        best_alphas = min(order_results)[1]
+        print(f"[Ngram] best order={order} alphas={best_alphas}")
     return results
 
 
@@ -344,13 +361,14 @@ def plot_results(results, out_dir):
     ngram_rows = [r for r in results if r["model"] == "Ngram"]
     if ngram_rows:
         plt.figure()
-        for alpha in sorted(set(r["alpha"] for r in ngram_rows)):
-            subset = sorted([r for r in ngram_rows if r["alpha"] == alpha], key=lambda r: r["param"])
-            plt.plot([r["param"] for r in subset], [r["test_perplexity"] for r in subset],
-                     marker="o", label=f"alpha={alpha}")
-        plt.xlabel("order")
+        for order in sorted(set(r["param"] for r in ngram_rows)):
+            subset = sorted([r for r in ngram_rows if r["param"] == order], key=lambda r: float(r["alpha"]))
+            plt.plot([float(r["alpha"]) for r in subset], [r["test_perplexity"] for r in subset],
+                     marker="o", label=f"order {order}")
+        plt.xscale("log")
+        plt.xlabel("top-level alpha (lower levels: previous order's best)")
         plt.ylabel("test perplexity")
-        plt.title("N-gram: perplexity vs. order")
+        plt.title("N-gram: perplexity vs. top-level alpha")
         plt.legend()
         plt.savefig(out_dir / "ngram_perplexity.png")
         plt.close()
@@ -427,7 +445,7 @@ def main():
     parser.add_argument("--results-dir", default="results")
     parser.add_argument("--checkpoints-dir", default="checkpoints")
     parser.add_argument("--hmm-states", type=int, nargs="+", default=[4, 8, 16, 32, 64])
-    parser.add_argument("--hmm-iter", type=int, default=30)
+    parser.add_argument("--hmm-iter", type=int, default=200)
     parser.add_argument("--vbhmm-states", type=int, nargs="+", default=None,
                          help="defaults to --hmm-states, for a direct MAP-EM vs VB-EM comparison at matching n_states")
     parser.add_argument("--vbhmm-iter", type=int, default=None, help="defaults to --hmm-iter")
@@ -441,7 +459,9 @@ def main():
                          help="n_states for --vbhmm-beta0-sweep; defaults to the VB-HMM n_states with the lowest "
                               "val perplexity in this run")
     parser.add_argument("--ngram-orders", type=int, nargs="+", default=[2, 3])
-    parser.add_argument("--ngram-alpha", type=float, nargs="+", default=[10.0, 30.0, 100.0])
+    parser.add_argument("--ngram-alpha", type=float, nargs="+", default=[10.0, 30.0, 100.0],
+                        help="values tried for each order's new top level; lower levels keep the previous "
+                             "order's best (see run_ngram_sweep)")
     parser.add_argument("--rnn-hidden", type=int, nargs="+", default=[64, 128, 256])
     parser.add_argument("--rnn-layers", type=int, nargs="+", default=[1, 2])
     parser.add_argument("--rnn-dropout", type=float, nargs="+", default=[0.2])

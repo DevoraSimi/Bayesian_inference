@@ -26,6 +26,11 @@ class NgramModel:
 
     `alpha` is the prior's total concentration (pseudo-count mass), not a
     per-word pseudo-count: larger alpha trusts the shorter context more.
+    It is either one value shared by every level, or a sequence of `order`
+    values, one per level: alpha[k] smooths the contexts of length k
+    (alpha[0] the unigram toward uniform, alpha[1] bigram contexts toward
+    the unigram, ...). Longer contexts are rarer, so they usually want a
+    larger alpha than shorter ones.
 
     order=2 is a bigram model (1 word of context), order=3 a trigram
     (2 words of context), etc. Each paragraph is preceded by `start_id`
@@ -38,9 +43,17 @@ class NgramModel:
         self.order = order
         self.vocab_size = vocab_size
         self.start_id = start_id
+        if not isinstance(alpha, (int, float)):
+            alpha = tuple(alpha)
+            if len(alpha) != order:
+                raise ValueError(f"need one alpha per level ({order} for order {order}), got {len(alpha)}")
         self.alpha = alpha
         self.context_counts = defaultdict(Counter)
         self.context_totals = defaultdict(int)
+
+    def level_alpha(self, k):
+        """The concentration used for contexts of length k."""
+        return self.alpha if isinstance(self.alpha, (int, float)) else self.alpha[k]
 
     def fit(self, id_sequences):
         # counts for every context length 0..order-1 at every position, since
@@ -66,7 +79,6 @@ class NgramModel:
             context = (self.start_id,) + context
         ctx_len = len(context)
 
-        alpha = self.alpha
         dist = np.full(self.vocab_size, 1.0 / self.vocab_size)
         for k in range(ctx_len + 1):  # unigram first, then ever longer contexts
             ctx = context[ctx_len - k:]
@@ -75,10 +87,19 @@ class NgramModel:
                 # never seen: posterior = prior, and every longer context
                 # containing this one is unseen too
                 break
+            alpha = self.level_alpha(k)
             dist *= alpha / (total + alpha)
             for word_id, c in self.context_counts[ctx].items():
                 dist[word_id] += c / (total + alpha)
         return dist
+
+
+def alpha_tag(alpha):
+    """The alpha part of a checkpoint name: "30.0" for a shared alpha,
+    "30.0_30.0_100.0" for per-level values (unigram level first)."""
+    if isinstance(alpha, (int, float)):
+        return str(float(alpha))
+    return "_".join(str(float(a)) for a in alpha)
 
 
 def train_ngram(id_sequences, order, vocab_size, start_id, alpha=1.0):

@@ -115,7 +115,7 @@ def load_metadata(path):
     whether metrics came fresh from evaluate_*() or were reloaded from disk."""
     metadata = json.loads(with_ext(path, ".json").read_text(encoding="utf-8"))
     for split_metrics in metadata.get("metrics", {}).values():
-        if not split_metrics:
+        if not isinstance(split_metrics, dict):
             continue
         for key in ("topk_acc", "topk_acc_words"):
             if key in split_metrics:
