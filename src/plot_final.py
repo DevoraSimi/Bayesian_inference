@@ -1,9 +1,11 @@
-"""Final report figures, all on the VALIDATION split, read from checkpoints/*.json.
+"""Final report figures, all on the VALIDATION split, read from
+all_checkpoints_in_report/*.json (every configuration; checkpoints/ holds only
+the final model of each family).
 
   A  loss curves      -- train (dashed) vs val (solid) NLL/token per iteration/epoch
                          for the iteratively trained models (HMM, VB-HMM, LSTM).
   B  val perplexity   -- final val perplexity vs each family's main hyperparameter:
-                         (a) n-gram, (b) HMM & VB-HMM, (c) LSTM (+ MC dropout).
+                         (a) n-gram, (b) HMM & VB-HMM, (c) LSTM.
   C  summary          -- best val perplexity of each model family, side by side.
 
 A and B are not duplicates: perplexity = exp(NLL/token), so the last val point of
@@ -12,7 +14,7 @@ a curve in A is log() of one point in B -- but A shows the training dynamics
 across hyperparameters, and B also covers the n-gram, which has no curve.
 
 Usage (from the repo root):
-    python src/plot_final.py [--checkpoints-dir checkpoints] [--out-dir results]
+    python src/plot_final.py [--checkpoints-dir all_checkpoints_in_report] [--out-dir results]
 """
 import argparse
 import json
@@ -185,7 +187,8 @@ def plot_a(runs, out_dir):
         _curve_panel(ax, items, title, "epoch", best_epoch_marker=True)
     axes[1, 1].sharey(axes[1, 0])
 
-    for ax in axes.flat:
+    # rows share y, so label only the left panel of each row
+    for ax in axes[:, 0]:
         ax.set_ylabel("NLL per token (nats)")
     # one legend per row, outside the plot area to the right (both panels share entries)
     best_handle = Line2D([], [], color=INK2, marker="o", linestyle="none", markersize=8,
@@ -195,7 +198,7 @@ def plot_a(runs, out_dir):
         axes[row, 1].legend(handles=h + style_handles + extra, loc="upper left",
                             bbox_to_anchor=(1.02, 1), handlelength=2.5)
 
-    fig.suptitle("Training vs validation loss (lower is better)", x=0.01, ha="left",
+    fig.suptitle("Training vs validation loss (lower is better)",
                  fontsize=18, color=INK)
     fig.tight_layout()
     save(fig, out_dir, "A_loss_curves")
@@ -239,11 +242,9 @@ def plot_b(runs, out_dir):
     ax.set_xlabel("hidden states K (log scale)")
     ax.set_title("(b) HMM (EM) vs VB-HMM", loc="left")
 
-    # (c) LSTM: x = hidden size, colour = depth, solid = deterministic, dashed = MC dropout
+    # (c) LSTM: x = hidden size, colour = depth
     ax = axes[2]
     grid = lstm_grid(runs)
-    mc = of_type(runs, "RNN-MCDropout")
-    mc_T = max((r["config"]["n_samples"] for r in mc), default=None)
     sizes = sorted({r["config"]["hidden_size"] for r in grid})
     for layers, color, marker in [(1, BLUE, "o"), (2, ORANGE, "s")]:
         rs = sorted([r for r in grid if r["config"]["num_layers"] == layers],
@@ -251,24 +252,18 @@ def plot_b(runs, out_dir):
         if rs:
             ends[ax].append(_line(ax, [r["config"]["hidden_size"] for r in rs], [val_ppl(r) for r in rs],
                                   color, marker, f"{layers} layer{'s' * (layers > 1)}"))
-        ms = sorted([r for r in mc if r["config"]["num_layers"] == layers
-                     and r["config"]["n_samples"] == mc_T], key=lambda r: r["config"]["hidden_size"])
-        if ms:
-            ends[ax].append(_line(ax, [r["config"]["hidden_size"] for r in ms], [val_ppl(r) for r in ms],
-                                  color, marker, f"{layers} layer{'s' * (layers > 1)} + MC",
-                                  linestyle="--"))
     plain_log_x(ax, sizes, base=2)
     ax.set_xlabel("LSTM hidden size (log scale)")
-    ax.set_title(f"(c) LSTM  (MC = MC dropout, T={mc_T})", loc="left")
+    ax.set_title("(c) LSTM", loc="left")
 
+    axes[0].set_ylabel("validation perplexity")
     for ax in axes:
-        ax.set_ylabel("validation perplexity")
         plain_y(ax)
         # below the panel, so it never covers data
         ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=2, handlelength=3)
     fig.suptitle("Validation perplexity by model and hyperparameter (lower is better; "
-                 "y-axes differ per panel -- see figure C for a common scale)",
-                 x=0.01, ha="left", fontsize=16, color=INK)
+                 "y-axes differ per panel)",
+                 fontsize=16, color=INK)
     fig.tight_layout()
     for ax in axes:
         end_labels(ax, ends[ax])
@@ -296,11 +291,6 @@ def plot_c(runs, out_dir):
     if b:
         c = b["config"]
         rows.append((f"LSTM (h={c['hidden_size']}, {c['num_layers']}L)", val_ppl(b)))
-    b = _best(of_type(runs, "RNN-MCDropout"))
-    if b:
-        c = b["config"]
-        rows.append((f"LSTM + MC dropout (h={c['hidden_size']}, {c['num_layers']}L, T={c['n_samples']})",
-                     val_ppl(b)))
 
     rows.sort(key=lambda r: r[1], reverse=True)  # best at the top
     labels, vals = zip(*rows)
@@ -322,7 +312,7 @@ def plot_c(runs, out_dir):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoints-dir", default="checkpoints")
+    parser.add_argument("--checkpoints-dir", default="all_checkpoints_in_report")
     parser.add_argument("--out-dir", default="results")
     args = parser.parse_args()
 

@@ -38,10 +38,10 @@ def print_suggestions(prefix, word2id, id2word, models, device, k, mc_samples, e
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="data/processed")
-    parser.add_argument("--hmm-checkpoint", default=None, help="e.g. checkpoints/hmm_16 (no extension)")
-    parser.add_argument("--vbhmm-checkpoint", default=None, help="e.g. checkpoints/vbhmm_16 (no extension)")
-    parser.add_argument("--ngram-checkpoint", default=None, help="e.g. checkpoints/ngram_3_a100.0 (no extension)")
-    parser.add_argument("--rnn-checkpoint", default=None, help="e.g. checkpoints/rnn_h256_l2_d0.293 (no extension)")
+    parser.add_argument("--hmm-checkpoint", default=None, help="e.g. checkpoints/hmm (no extension)")
+    parser.add_argument("--vbhmm-checkpoint", default=None, help="e.g. checkpoints/vbhmm (no extension)")
+    parser.add_argument("--ngram-checkpoint", default=None, help="e.g. checkpoints/ngram_3 (no extension)")
+    parser.add_argument("--rnn-checkpoint", default=None, help="e.g. checkpoints/rnn (no extension)")
     parser.add_argument("--k", type=int, default=5)
     parser.add_argument(
         "--mc-dropout", type=int, default=0, metavar="N_SAMPLES",

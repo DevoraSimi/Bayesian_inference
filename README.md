@@ -79,18 +79,21 @@ python3 src/experiment.py \
   --rnn-hidden 64 128 256 --rnn-layers 1 2 --rnn-dropout 0.2 --rnn-epochs 15 \
   --mc-dropout-samples 5 20 50
 
-# 5. Inspect results
-python3 src/list_checkpoints.py --out results/checkpoint_manifest.csv
+# 5. Inspect results (every configuration is kept in all_checkpoints_in_report/)
+python3 src/list_checkpoints.py --checkpoints-dir all_checkpoints_in_report \
+  --out results/checkpoint_manifest.csv
+python3 src/plot_final.py            # report figures, reads all_checkpoints_in_report/
 python3 src/plot_history.py
 
 # 6. Try live next-word suggestions from any trained model(s). Without --text it
 #    runs interactively: type a prefix, get suggestions, Ctrl-D to quit.
 #    Input is case-sensitive, like the training data ("Mr. Holmes", not "mr. holmes").
 #    <unk>/<eos> are never suggested; add --no-punct to suggest words only.
+#    checkpoints/ holds the final (best) model of each family.
 python3 src/predict_demo.py \
-  --hmm-checkpoint checkpoints/hmm_16 --vbhmm-checkpoint checkpoints/vbhmm_16 \
-  --ngram-checkpoint checkpoints/ngram_3_a100.0 --rnn-checkpoint checkpoints/rnn_h256_l2_d0.293 \
-  --mc-dropout 50 --text "Sherlock Holmes said that"
+  --ngram-checkpoint checkpoints/ngram_3 --hmm-checkpoint checkpoints/hmm \
+  --vbhmm-checkpoint checkpoints/vbhmm --rnn-checkpoint checkpoints/rnn \
+  --text "Sherlock Holmes said that"
 ```
 
 Every `train_*.py` script and `experiment.py` accept `--data-dir`, `--checkpoints-dir`,
@@ -173,8 +176,13 @@ data/
   raw/                the 9 Gutenberg source files
   processed/           vocab.json, train/val/test.txt, split_metadata.json
 
-checkpoints/    <name>.pkl or .pt (weights) + <name>.json (config, metrics,
-                training history, timestamp) per trained model
+checkpoints/    the final model of each family, used by the demo:
+                ngram_3 (order 3, alpha 100), hmm (K=64), vbhmm (K=64,
+                beta0 0.1), rnn (LSTM, hidden 256, 2 layers)
+all_checkpoints_in_report/
+                every configuration in the report (used for the figures)
+                Each model is <name>.pkl or .pt (weights) + <name>.json
+                (config, metrics, training history, timestamp)
 results/        comparison.csv, per-model plots, checkpoint manifest
 ```
 
