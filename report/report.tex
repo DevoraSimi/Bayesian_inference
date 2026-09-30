@@ -10,40 +10,23 @@
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 
+\graphicspath{{../results/}{figures/}}
+
 \newcommand{\TODO}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
 
-\title{Bayesian and Neural Approaches to Word-Level Language Modeling:\\
-A Comparative Study on the Sherlock Holmes Corpus}
-\author{Devora Simi}
+\title{Next-Word Prediction for Automatic Text Completion\\ \Large Bayesian Inference Final Project}
+
 \date{\today}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-We study next-word prediction on a corpus of Arthur Conan Doyle's Sherlock
-Holmes novels and short stories as a controlled setting for comparing
-statistical language models that make different commitments to Bayesian
-inference. We implement and evaluate four model families on identical
-train/validation/test splits: (i) an $n$-gram Markov model with
-hierarchical Dirichlet smoothing, in which each context's next-word
-distribution has a Dirichlet prior centred on the next-shorter context's
-distribution, so that the smoothed estimate is exactly a Bayesian posterior
-predictive; (ii) a discrete-emission Hidden
-Markov Model (HMM) fit by maximum-likelihood/MAP Baum-Welch EM, i.e.\ a
-point-estimate latent-variable model; (iii) a fully Bayesian variant of the
-same HMM fit by mean-field Variational Bayes EM (VB-EM), which maintains
-Dirichlet \emph{posterior distributions} over the initial-state,
-transition, and emission parameters rather than point estimates; and (iv)
-a long short-term memory (LSTM) recurrent neural network language model, used both as a
-point-estimate neural baseline and, via Monte Carlo Dropout, as an
-approximate Bayesian neural model with predictive uncertainty. All models
-are evaluated on held-out perplexity and top-$k$ next-word accuracy, the
-latter reported both over all tokens and restricted to real words (i.e.\
-excluding punctuation and end-of-paragraph tokens). This report documents the problem
-formulation, data pipeline, and modeling/evaluation methodology.
-\emph{Experimental results are not yet included.}
+This project compares models for next-word prediction: given the text so far, suggest the most likely next word. The models take different
+approaches: an $n$-gram model, which predicts from counts of the last few words; Hidden Markov Models (HMMs), which capture the context in hidden states, trained with Baum-Welch and with Variational Bayes; and a Long Short-Term Memory (LSTM) model, a type of recurrent neural network (RNN). Each is tested with different settings, such as the number of hidden states or the network size. The models are trained on the Sherlock Holmes stories. The LSTM gives the best predictions, while the $n$-gram model is the simplest and the most interpretable.
 \end{abstract}
+
+
 
 \tableofcontents
 
@@ -51,51 +34,32 @@ formulation, data pipeline, and modeling/evaluation methodology.
 \section{Problem Statement}
 % ============================================================
 
-The task is \textbf{word-level next-token prediction}: given a prefix of
-tokens $w_1, \dots, w_{t-1}$ from a paragraph, predict a distribution over
-the next token $w_t$ from a fixed vocabulary. This is the same underlying
-predictive-text task that powers autocomplete and keyboard-suggestion
-systems, and it is a convenient testbed for a broader question: \emph{how
-much does the choice of Bayesian inference strategy matter for the same
-modeling task and the same data?}
+The task is {word-level next-word prediction}: given the tokens
+$w_1, \dots, w_{t-1}$ of a paragraph, predict a distribution over the
+next token $w_t$ from a fixed vocabulary of size $V$, as in autocomplete.
+Tokens are words and punctuation marks. At each position $t$, the
+{context} is the text so far in the paragraph,
+$w_1, \dots, w_{t-1}$, and the {truth} is the token that actually
+comes next, $w_t$. The {prediction} is a probability distribution
+over the vocabulary, $P(w_t \mid w_1, \dots, w_{t-1})$, and its $k$ most
+probable tokens are offered as suggestions for the next word.
 
-Rather than comparing unrelated model families, we deliberately structure
-the comparison as three points on a single spectrum of how much
-uncertainty a model represents over its own parameters:
+A good model gives high probability to the true next token and ranks it
+among its top suggestions. The main difficulty is that most contexts are
+rare: many word sequences appear only a few times in the training text,
+or never, so the model must generalize from similar contexts it has seen.
 
-\begin{enumerate}
-    \item \textbf{Point estimation with a Bayesian smoothing prior.} The
-    $n$-gram model and the standard HMM both use a Dirichlet prior only to
-    regularize a single point estimate of their parameters (posterior mean
-    or MAP), never propagating parameter uncertainty forward.
-    \item \textbf{Full posterior inference.} The Variational Bayes HMM
-    places the same conjugate Dirichlet priors on the same parameters as
-    the point-estimate HMM, but maintains and updates full posterior
-    distributions over them via mean-field VB-EM, so that predictions
-    integrate over parameter uncertainty rather than plugging in a single
-    value.
-    \item \textbf{Approximate Bayesian deep learning.} The long short-term
-    memory (LSTM) network~\cite{hochreiter1997} has no
-    tractable parameter posterior, but Monte Carlo Dropout (Gal and
-    Ghahramani, 2016) is used to approximate Bayesian model averaging over
-    an implicit posterior over its weights, at prediction time.
-\end{enumerate}
-
-Holding the task, data, and evaluation protocol fixed lets us ask, for
-each pair of models, whether the extra machinery of full or approximate
-Bayesian inference actually changes predictive performance (perplexity,
-top-$k$ accuracy) and/or yields useful predictive uncertainty, relative to
-the corresponding point-estimate model.
-
-A secondary, applied framing of the same task is a \textbf{predictive-text
-/ autocomplete demo}: given a typed prefix, suggest the top-$k$ most
-likely next words under each trained model (and, for the RNN, an
-uncertainty estimate per suggestion via MC Dropout).
-Instructions for reproducing every experiment and running the demo
-(\texttt{src/predict\_demo.py}) are in the repository's \texttt{README.md}.
+\paragraph{Demo.} A small demo (\texttt{src/predict\_demo.py}) shows the
+task in practice. The user types the beginning of a sentence, and each
+selected model suggests the five most likely next words (the number can
+be changed). \texttt{<unk>} and \texttt{<eos>} are never offered as suggestions, and punctuation can optionally be hidden. The demo runs on the trained models saved in the
+repository, so no retraining is needed. The repository's
+\texttt{README.md} explains how to run the demo and how to reproduce all
+experiments.
 
 % ============================================================
 \section{Data}
+\label{sec:data}
 % ============================================================
 
 \subsection{Source corpus}
@@ -197,14 +161,14 @@ Paragraph lengths vary widely: the median paragraph has 29 tokens, the longest 7
 \section{Models}
 % ============================================================
 
-All four model families are trained and evaluated on the same encoded
+All four models are trained and evaluated on the same encoded
 paragraphs, each ending in \texttt{<eos>} and each processed on its own
 (no model sees context from a previous paragraph), and share the same
 vocabulary, so every model predicts the same tokens and their outputs are directly comparable.
 
 \subsection{$n$-gram model with hierarchical Dirichlet smoothing}
 
-The simplest model tested is the n-gram model, which predicts the next word from the $n-1$ words before it,
+The simplest model tested is the $n$-gram model, which predicts the next word from the $n-1$ words before it,
 using counts from the training data. Raw counts give probability zero to
 any word never seen after a context, so we smooth them with the
 hierarchical Dirichlet scheme of MacKay and Peto~\cite{mackay1995}. Let
@@ -226,29 +190,22 @@ concentration $\alpha_k$ per context length $k$.
 Here $\alpha_k$ is the prior's total pseudo-count mass: a context's own
 counts get weight $c(h_k)/(c(h_k) + \alpha_k)$, so frequent contexts follow
 their data while rare or unseen ones fall back on the shorter context.
-Separate levels get separate concentrations because longer contexts are
-rarer: a single shared $\alpha$ large enough to smooth sparse trigram
-contexts would also over-smooth the much better-estimated bigram level.
-Plain additive smoothing is the special case where every context is
-smoothed straight toward uniform; with it, rare trigram contexts fall
-back to a near-random guess, and a trigram model did worse than a bigram.
+The concentrations may be shared ($\alpha_k = \alpha$ for every $k$) or
+set separately per level.
+Plain additive smoothing, in contrast, pulls every context straight
+toward the uniform distribution, so a rare trigram context gives an
+almost uniform, uninformative prediction instead of falling back on
+what the bigram knows about it.
+
 The model trains in a single counting pass and is fully interpretable,
 but it sees only the last $n-1$ words and cannot generalise across
-similar contexts. Implemented in \texttt{src/ngram.py}.
-
-\textbf{Hyperparameters explored:} order $n$ (context length) and the
-per-level concentrations $\alpha_k$, each searched over $\{10, 30, 100\}$.
-Because $\alpha_k$ is a
-total pseudo-count rather than a per-word one, values of order 1 or below
-would make a context seen only once put most of its mass on the single
-word that followed it; values in the tens to hundreds let rare contexts
-rely mostly on the shorter context while frequent contexts keep their
-own counts.
+similar contexts. Its hyperparameters are the order $n$ and the
+concentrations $\alpha_k$. Implemented in \texttt{src/ngram.py}.
 
 \subsection{Hidden Markov Model (point estimate)}
 
-Instead of a fixed window of $n-1$ words, an HMM carries the whole
-history as a belief over $N$ hidden states. Each word $w_t$ is emitted by
+Instead of a fixed window of $n-1$ words, an HMM\cite{rabiner1989} carries the whole
+history as a belief over $K$ hidden states. Each word $w_t$ is emitted by
 a hidden state $z_t$, with initial distribution $\pi$, transitions
 $A_{ij} = P(z_{t+1} = j \mid z_t = i)$ and emissions
 $B_{jw} = P(w_t = w \mid z_t = j)$.
@@ -268,9 +225,9 @@ We train with Baum-Welch (EM). The E-step uses forward-backward to get
 the expected state and transition counts,
 $\gamma_t(i) = P(z_t = i \mid w_{1:T})$ and
 $\xi_t(i,j) = P(z_t = i, z_{t+1} = j \mid w_{1:T})$. The M-step normalises
-these counts, with an additive smoothing term $\epsilon = 10^{-3}$, e.g.
+these counts, with a small additive smoothing term $\epsilon$. For the transitions,
 \(
-A_{ij} = \frac{\sum_t \xi_t(i,j) + \epsilon}{\sum_{t<T} \gamma_t(i) + N\epsilon},
+A_{ij} = \frac{\sum_t \xi_t(i,j) + \epsilon}{\sum_{t<T} \gamma_t(i) + K\epsilon},
 \)
 and analogously for $B$ and $\pi$. The smoothing prevents zero
 probabilities for transitions or emissions that receive zero expected
@@ -278,12 +235,8 @@ counts. The resulting model is a point estimate of $\pi$, $A$, and $B$,
 with no posterior uncertainty over these parameters, which the VB-HMM
 below addresses.
 Parameters are randomly initialised to break symmetry between the
-hidden states, and EM finds only a local optimum. Training stops when
-the relative change of the training log-likelihood is below $10^{-4}$
-(the same criterion as the VB-HMM below), or after at most 100
-iterations. Implemented in \texttt{src/hmm.py}.
-
-\textbf{Hyperparameters explored:} number of latent states $N$.
+hidden states, and EM finds only a local optimum. 
+The main hyperparameter is the number of hidden states $K$. Implemented in \texttt{src/hmm.py}.
 
 \subsection{Variational Bayes HMM (full posterior)}
 
@@ -294,8 +247,8 @@ $A_{i\cdot} \sim \text{Dir}(\alpha_0)$, $B_{j\cdot} \sim \text{Dir}(\beta_0)$,
 $\pi \sim \text{Dir}(\pi_0)$, and fits an approximate posterior
 $q(z)\,q(\pi, A, B)$ by mean-field Variational Bayes~\cite{beal2003,bishop2006}.
 
-By conjugacy the posterior stays Dirichlet, so the M-step just adds the
-expected counts to the prior, e.g.\
+By conjugacy, the posterior stays Dirichlet, so the M-step just adds the
+expected counts to the prior:
 $\hat\alpha_{ij} = \alpha_0 + \sum_t \xi_t(i,j)$. The E-step is the same
 forward-backward, but with each parameter replaced by
 \[
@@ -307,15 +260,12 @@ $\hat\alpha_{ij} / \sum_k \hat\alpha_{ik}$, but for small counts it is
 smaller, so rare transitions,
 emissions and states are down-weighted automatically. Training maximises
 the ELBO, $\sum_t \log \widetilde{c}_t - \mathrm{KL}(q \,\|\, p)$, which
-never decreases, and stops when its relative change is below $10^{-4}$
-or after at most 100 iterations.
+never decreases.
 For prediction we use the posterior mean
 $\hat\alpha_{ij} / \sum_k \hat\alpha_{ik}$, so the model plugs into the
-same forward filter as the HMM. Implemented in \texttt{src/vb\_hmm.py}.
+same forward filter as the HMM. 
+Implemented in \texttt{src/vb\_hmm.py}.
 
-\textbf{Hyperparameters explored:} number of latent states $N$ (matched to
-the HMM sweep). The priors are fixed at $\alpha_0 = \pi_0 = 1$ (uniform)
-and $\beta_0 = 0.1$ (sparse emissions).
 
 \subsection{LSTM recurrent neural network}
 
@@ -334,7 +284,8 @@ c_t &= f_t \odot c_{t-1} + i_t \odot g_t, \qquad h_t = o_t \odot \tanh(c_t).
 The forget gate decides how much of the old memory to keep, while the
 input gate decides how much of the candidate content $g_t$ to write to
 the cell. Because $c_t$ is updated
-additively, information and gradients can propagate across many time steps, helping to alleviate the vanishing-gradient problem of plain RNNs. With two layers,the second LSTM layer takes the first layer's hidden state at each time step as input. A linear layer maps the top $h_t$ to the next-word
+additively, information and gradients can propagate across many time steps, which helps with the
+vanishing-gradient problem of plain RNNs. With two layers, the second LSTM layer takes the first layer's hidden state at each time step as input. A linear layer maps the top $h_t$ to the next-word
 distribution,
 \[
 P_\theta(w_{t+1} = w \mid w_{1:t}) = \mathrm{softmax}(W_{\text{out}} h_t + b_{\text{out}})_w ,
@@ -346,208 +297,321 @@ layers when there are two). Similar contexts can lead to similar hidden
 states, allowing information learned from one context to generalize to
 others rather than relying only on exact count matches.
 
-Like the HMM and the $n$-gram model, the LSTM processes each paragraph on
+Like the other models, the LSTM processes each paragraph on
 its own: the hidden state starts at zero and the first input is
 \texttt{<eos>} (the paragraph-start context), so every token of the
 paragraph, including the first, is predicted, and no context crosses
-paragraph boundaries. Each mini-batch holds $B = 20$ paragraphs of similar
-length, padded at the end. On each mini-batch we minimise the
-cross-entropy loss, which with a single true next token is its average
+paragraph boundaries. 
+Training uses mini-batches of paragraphs of similar length, padded at the end. On each mini-batch we minimise the
+cross-entropy loss, which, with a single true next token, is its average
 negative log-probability,
 \[
 \mathcal{L}(\theta) = -\frac{1}{\sum_b T_b}\sum_{b=1}^{B}\sum_{t=1}^{T_b}
 \log P_\theta\big(w^{(b)}_{t} \mid w^{(b)}_{< t}\big),
 \]
-where $T_b$ is the length of paragraph $b$ (padding is excluded) and
-$w^{(b)}_{< t}$ are its preceding tokens, and take one Adam step, with the
-gradient norm clipped at $0.25$. Paragraphs are short (median 29 tokens,
-at most 710, plus \texttt{<eos>}), so gradients are propagated back
-through the whole paragraph. We stop
-early when validation perplexity has not improved for 5 epochs and keep
-the weights of the best epoch. The result is a single point estimate
-$\hat\theta$ of the weights. Implemented in \texttt{src/rnn.py}.
+where $B$ is the number of paragraphs in the mini-batch, $T_b$ is the length of paragraph $b$ (padding is excluded) and
+$w^{(b)}_{< t}$ are its preceding tokens, and take one Adam step, with gradient-norm clipping.
+Paragraphs are short (median 29 tokens,
+at most 710), so gradients are propagated back
+through the whole paragraph. Training stops early when validation perplexity stops
+improving, and the weights of the best epoch are kept. The result is a
+single point estimate $\hat\theta$ of the weights.
+The hyperparameters are the embedding size, the hidden size, the number
+of layers, the dropout rate, and the learning rate. Implemented in \texttt{src/rnn.py}.
 
-\textbf{Hyperparameters explored:} in two steps. First, embedding size,
-dropout and learning rate are tuned with Optuna's TPE
-sampler~\cite{akiba2019} (\texttt{src/tune\_rnn.py}): 50 trials of up to
-40 epochs each, with the same early stopping, each scored by its best
-validation perplexity; the best configuration is then retrained for up
-to 50 epochs. The search runs at a fixed hidden size
-(128) and one layer. Second, with those three values fixed, a grid
-over hidden size and number of layers (\texttt{src/experiment.py}).
-
-\subsubsection{Monte Carlo Dropout}
-
-The LSTM has no tractable posterior over its weights. Gal and
-Ghahramani~\cite{gal2016} showed that training with dropout is
-approximate variational inference, where $q(\theta)$ is the distribution
-of weights produced by random dropout masks. So at test time we keep
-dropout on and average $M$ forward passes, each with a fresh mask
-$\theta_m \sim q(\theta)$:
-\[
-\bar P(w \mid w_{1:t}) = \frac{1}{M}\sum_{m=1}^{M} P_{\theta_m}(w \mid w_{1:t})
-\;\approx\; \int P_\theta(w \mid w_{1:t})\, q(\theta)\, d\theta .
-\]
-Perplexity is computed from $\log \bar P$ at the true token, not from the
-mean of $\log P_{\theta_m}$: that would score the individual samples
-rather than their average, and by Jensen's inequality it is always worse.
-The spread across passes, $\sigma(w) = \operatorname{std}_m
-P_{\theta_m}(w \mid w_{1:t})$, measures how uncertain the model is about
-each word; with no dropout all passes agree and $\sigma = 0$.
-
-Nothing is retrained: the same weights are scored, only the prediction
-changes. We use it in two places. \texttt{evaluate\_rnn\_mc\_dropout}
-re-scores each trained model for several values of $M$ (e.g.\ 5, 20,
-50), to see whether averaging improves perplexity and accuracy and how
-many passes it takes to converge. \texttt{predict\_demo.py} shows each
-suggested word with $\bar P$ and $\sigma$. Implemented in
-\texttt{src/rnn.py} and \texttt{src/evaluation.py}.
 
 % ============================================================
 \section{Evaluation Protocol}
+\label{sec:eval}
 % ============================================================
 
-All four model families are scored with the same two metrics
-(\texttt{src/evaluation.py}), computed identically (up to each model's
-own notion of ``predict from the prefix seen so far'') across models:
+All models are scored by the same code (\texttt{src/evaluation.py}) on
+exactly the same token positions, so their numbers can be compared
+directly. 
 
-\begin{itemize}
-    \item \textbf{Perplexity:} $\exp\!\big(-\tfrac{1}{T}\sum_t \log
-    P(w_t \mid w_{<t})\big)$ over all tokens in the evaluation split,
-    including each sequence's first token, which every model predicts
-    from a learned paragraph-start distribution: the HMM's initial-state
-    distribution, and for the $n$-gram model and the LSTM the
-    distribution after a \texttt{<eos>} start token (the usual
-    \texttt{<s>} of $n$-gram models).
-    \item \textbf{Top-$k$ accuracy}, $k \in \{1, 5, 10\}$: whether the
-    true next token is among the model's $k$ highest-probability
-    predictions, computed incrementally (predict, then reveal the true
-    token and update state) and \textbf{not} scored on each sequence's
-    first token (no prior context to predict from).
-\end{itemize}
+\paragraph{Perplexity.} At each position $t$ the model outputs a
+predicted distribution $\hat y_t$ over the vocabulary, with
+$\hat y_{t,w} = P(w \mid w_{<t})$, and the truth is a one-hot vector
+$y_t$ with $y_{t,w} = 1$ only for the true token $w_t$. The average
+cross-entropy over all $T$ tokens is
+\[
+\mathrm{CE} = -\frac{1}{T}\sum_{t=1}^{T} \sum_{w \in \mathcal{V}}
+y_{t,w} \log \hat y_{t,w}
+= -\frac{1}{T}\sum_{t=1}^{T} \log P(w_t \mid w_{<t}) = \mathrm{NLL},
+\]
+since only the true token's term is nonzero. This is the negative
+log-likelihood (NLL) of the text, the loss minimised by the LSTM and
+plotted as the loss per token in the learning curves. Perplexity is its
+exponential, $\mathrm{PPL} = \exp(\mathrm{NLL})$.
+Perplexity can be read as the number of words the model is effectively
+choosing between at each step: a model that guesses uniformly over the
+vocabulary has perplexity $V$, and lower is better. Unlike accuracy, it
+uses the full predicted distribution, so it rewards a model for giving
+the true word high probability even when it is not ranked first. All
+tokens are scored, including the first token of each paragraph, which is
+predicted from a start distribution (the HMM's initial-state
+distribution; for the $n$-gram and the LSTM, the distribution after the
+paragraph-start token).
 
-Because punctuation tokens are highly predictable from local context (and
-would inflate accuracy for any model that learns punctuation patterns
-well), top-$k$ accuracy is reported \textbf{twice}: once over all tokens,
-and once restricted to positions whose true next token is a real word
-(i.e.\ excluding the punctuation subset of the vocabulary and
-\texttt{<eos>}). The
-words-only variant is the more meaningful measure of actual next-word
-prediction quality.
+\paragraph{Top-$k$ accuracy.} For $k \in \{1, 5\}$, the fraction of
+positions where the true next token is among the $k$ most probable
+predictions. The first token of each paragraph is not scored, since it is
+predicted with no context at all. Punctuation is easy to predict and
+inflates accuracy, so accuracy is reported both over all tokens and over
+real words only (excluding punctuation and \texttt{<eos>}).
 
-\texttt{<unk>} is treated as an ordinary token by every model: it is
-trained on, predicted, and scored in both perplexity and top-$k$ accuracy
-(where it counts as a word), as in standard benchmarks such as WikiText.
-Since validation and test contain roughly three times as many
-\texttt{<unk>} tokens as training (Table~\ref{tab:splits}), and
-\texttt{<unk>} is comparatively easy to predict, this should be kept in
-mind when comparing validation/test scores with training scores. The
-same rule applies to every model, so model-to-model comparisons remain
-like-for-like.
+\texttt{<unk>} is treated as an ordinary token, as in
+WikiText~\cite{merity2016}. Since all models share the same vocabulary,
+this affects them all equally. Every model processes each paragraph
+independently, starting from its initial state, so no model can use text
+from earlier paragraphs.
 
-All models are evaluated on the same validation and held-out test
-splits described in Section~2, on exactly the same tokens. All models
-process each paragraph independently, as is standard in $n$-gram and HMM
-language modelling, so that differences reflect the model class rather
-than the amount of context available. (Common RNN benchmarks such as
-WikiText instead carry the hidden state across paragraphs, which would
-give the LSTM context the other models never see.)
+\paragraph{Validation and test.} The validation split is used for all
+choices: hyperparameters are selected by validation perplexity, and the
+LSTM's early stopping also uses it. The test split is used only once, at
+the end, to compare the best configuration of each model family
+(Section~\ref{sec:test}).
+
+
+
+
 
 % ============================================================
 \section{Experimental Design}
+\label{sec:design}
 % ============================================================
 
-\texttt{src/experiment.py} runs a grid sweep over all four model
-families on identical data splits, saving a checkpoint (model
-weights/parameters, training config, and validation/test metrics) per
-configuration for reproducibility:
+Every configuration is trained on the training split
+(\texttt{src/experiment.py}) and compared by validation perplexity.
 
-\begin{itemize}
-    \item \textbf{$n$-gram:} orders $n \in \{2, 3\}$, with the per-level
-    concentrations tuned one level at a time: the bigram sweeps
-    $\alpha \in \{10, 30, 100\}$ (shared by its unigram and bigram levels;
-    the unigram level's value barely matters, as its single context holds
-    almost all training tokens), and the trigram keeps the best bigram's
-    lower-level concentrations and sweeps only its new trigram-level
-    concentration over the same values. This costs the same number of runs as a single shared
-    $\alpha$ while letting each level find its own value.
-    \item \textbf{HMM and VB-HMM:} grid over number of latent states,
-    with the \emph{same} state-count grid used for both, enabling a
-    direct MAP-EM vs.\ VB-EM comparison at matched capacity; VB-HMM prior
-    concentrations held fixed.
-    \item \textbf{LSTM:} grid over hidden size $\times$ number of layers,
-    with embedding size, dropout and learning rate fixed to the Optuna
-    result, each trained with early stopping on validation
-    perplexity; optionally, each trained configuration is additionally
-    re-evaluated with MC Dropout at several sample counts to study
-    convergence of the Bayesian model average.
-\end{itemize}
+\paragraph{$n$-gram.} Order $n \in \{2, 3\}$, first with a single shared
+concentration $\alpha \in \{10, 30, 100, 300\}$. Because $\alpha_k$ is a
+total pseudo-count rather than a per-word one, values of order 1 or below
+would make a context seen only once put most of its mass on the single
+word that followed it; values in the tens to hundreds let rare contexts
+rely mostly on the shorter context while frequent contexts keep their
+own counts. We then tested separate concentrations per level. Longer
+contexts are rarer, so the sparse trigram level might need more smoothing
+than the better-estimated bigram level, which a shared $\alpha$ cannot
+provide. The levels are tuned in stages: the bigram's best value
+($\alpha = 100$) is kept for the lower levels, and only the trigram
+level's $\alpha_2$ is searched over $\{30, 100, 300\}$.
 
-Separately, \texttt{src/tune\_rnn.py} runs an Optuna TPE search over
-embedding size, dropout, and learning rate at a fixed architecture size,
-then retrains the best configuration with a longer budget and early
-stopping.
+\paragraph{HMM and VB-HMM.} $K \in \{4, 8, 16, 32, 64\}$ hidden states,
+the same grid for both. The VB-HMM uses uniform priors on transitions and
+initial state ($\alpha_0 = \pi_0 = 1$) and a sparse emission prior
+($\beta_0 = 0.1$). At the best $K$ ($K = 64$), the emission prior is
+also varied, $\beta_0 \in \{0.01, 0.1, 1\}$.
 
-Every configuration of every model is evaluated with the identical
-protocol of Section~4 on the identical held-out test split, so that
-perplexity and top-$k$ accuracy are directly comparable model-to-model
-and not just within a model family. The ``best'' configuration of each
-model family is selected by \emph{validation} perplexity, and its test
-metrics are then reported; the test split is never used for selection,
-which would bias the reported test numbers optimistically.
+\paragraph{LSTM.} In two steps. First, embedding size, dropout, and
+learning rate are tuned with Optuna's TPE sampler~\cite{akiba2019}
+(\texttt{src/tune\_rnn.py}) at a fixed hidden size of 128 and one layer:
+50 trials of up to 40 epochs each, with early stopping on the validation perplexity, each
+scored by its best validation perplexity. The best configuration is then retrained for up
+to 50 epochs. Second, with those three values
+fixed, we train every combination of hidden size $\{64, 128, 256\}$ and
+$\{1, 2\}$ layers, each with early stopping on validation perplexity.
+
+\paragraph{Training settings.} The following settings are not tuned and
+are the same in every run. The HMM uses smoothing $\epsilon = 10^{-3}$
+in the M-step. The HMM and VB-HMM stop when the relative change of their
+training objective (the log-likelihood and the ELBO, respectively) is
+below $10^{-4}$ for 3 consecutive iterations, or after at most 200
+iterations. The LSTM uses mini-batches of 20 paragraphs, Adam with the
+gradient norm clipped at $0.25$, and early stopping with a patience of 5
+epochs.
 
 % ============================================================
 \section{Results}
 % ============================================================
 
-\TODO{This section will report, once experiments are finalized: (1) a
-comparison table of best validation/test perplexity and top-1/top-5
-accuracy (all-tokens and words-only) per model family, matching the
-fields already logged to \texttt{results/comparison.csv}; (2)
-per-family sweep plots -- perplexity vs.\ number of states (HMM,
-VB-HMM), vs.\ top-level concentration (n-gram, by order), and vs.\ hidden size (RNN, by
-layers/dropout); (3) the MC-Dropout sample-count convergence plot; (4)
-the Optuna search plot and best hyperparameters found
-(\texttt{results/optuna\_trials.csv}, \texttt{results/optuna\_search.png}); and
-(5) a head-to-head summary figure of best-configuration perplexity and
-accuracy across all four model families.}
+Hyperparameters are selected on the validation split; the test split is
+used once, in Section~\ref{sec:test}, to compare the final models. Perplexity (PPL) is the main criterion. Table~\ref{tab:all} lists every configuration on the
+validation split, Figure~\ref{fig:sweeps} shows the hyperparameter sweeps
+and Figure~\ref{fig:curves} the loss curves.
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{ll r rr rr}
+\toprule
+ & & & \multicolumn{2}{c}{All tokens} & \multicolumn{2}{c}{Words only} \\
+\cmidrule(lr){4-5} \cmidrule(lr){6-7}
+Model & Setting & PPL $\downarrow$ & Top-1 $\uparrow$ & Top-5 $\uparrow$& Top-1 $\uparrow$& Top-5 $\uparrow$\\
+\midrule
+$n$-gram & order 2, $\alpha = 10$  & 145.8 & 18.5 & 40.5 & 13.1 & 32.1 \\
+         & order 2, $\alpha = 30$  & 133.7 & 18.4 & 40.5 & 12.9 & 31.7 \\
+         & order 2, $\alpha = 100$ & 128.6 & 18.1 & 39.8 & 12.2 & 30.7 \\
+         & order 2, $\alpha = 300$ & 131.2 & 17.5 & 38.4 & 11.1 & 29.0 \\
+         & order 3, $\alpha = 10$  & 159.2 & 21.5 & 43.8 & 16.4 & 35.9 \\
+         & order 3, $\alpha = 30$  & 128.8 & 21.2 & 44.2 & 15.8 & 35.9 \\
+         & order 3, $\alpha = 100$ & \textbf{115.9} & 20.3 & 43.1 & 14.5 & 34.5 \\
+         & order 3, $\alpha = 300$ & 116.5 & 19.2 & 40.9 & 12.9 & 31.9 \\
+\midrule
+HMM & $K = 4$  & 307.2 & 7.7  & 26.2 & 1.2  & 15.4 \\
+    & $K = 8$  & 221.0 & 11.0 & 29.5 & 5.1  & 18.9 \\
+    & $K = 16$ & 183.9 & 12.2 & 31.6 & 6.6  & 21.7 \\
+    & $K = 32$ & 150.9 & 15.0 & 35.4 & 9.1  & 26.4 \\
+    & $K = 64$ & \textbf{132.9} & 16.4 & 36.9 & 10.5 & 28.2 \\
+\midrule
+VB-HMM & $K = 4$  & 329.9 & 8.3  & 24.3 & 5.1 & 13.8 \\
+       & $K = 8$  & 273.9 & 10.1 & 26.9 & 5.1 & 15.7 \\
+       & $K = 16$ & 221.3 & 13.4 & 30.7 & 6.6 & 20.6 \\
+       & $K = 32$ & 185.5 & 14.1 & 33.5 & 7.7 & 23.8 \\
+       & $K = 64$ & \textbf{172.9} & 14.7 & 34.6 & 8.3 & 24.9 \\
+       & $K = 64$, $\beta_0 = 0.01$ & 176.7 & 14.8 & 34.5 & 8.9 & 24.7 \\
+       & $K = 64$, $\beta_0 = 1$    & 235.6 & 12.2 & 28.3 & 4.5 & 17.4 \\
+\midrule
+LSTM & hidden 64, 1 layer   & 86.8 & 21.7 & 43.9 & 15.2 & 35.3 \\
+     & hidden 64, 2 layers  & 86.7 & 21.3 & 43.2 & 14.8 & 34.6 \\
+     & hidden 128, 1 layer  & 78.4 & 23.1 & 45.6 & 16.3 & 37.2 \\
+     & hidden 128, 2 layers & 77.6 & 22.7 & 45.3 & 15.8 & 36.9 \\
+     & hidden 256, 1 layer  & 73.2 & 23.5 & 46.6 & 16.7 & 38.4 \\
+     & hidden 256, 2 layers & \textbf{72.9} & 23.7 & 46.4 & 16.4 & 38.0 \\
+\bottomrule
+\end{tabular}
+\caption{All configurations on the validation set. Accuracies in \%.
+VB-HMM uses $\beta_0 = 0.1$ unless stated; the LSTMs use embedding size
+256, dropout 0.29 and learning rate $6.2 \cdot 10^{-4}$.}
+\label{tab:all}
+\end{table} 
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{B_val_perplexity.png}
+\caption{Validation perplexity vs.\ the main hyperparameter of each
+model. The y-axes differ between panels.}
+\label{fig:sweeps}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{A_loss_curves.png}
+\caption{Training (dashed) and validation (solid) loss per token. For
+the LSTM, training uses early stopping, so the dot marks the best epoch (lowest validation loss), whose
+weights are kept.}
+\label{fig:curves}
+\end{figure}
+
+\paragraph{$n$-gram.} For both orders, perplexity decreases as $\alpha$
+grows up to $\alpha = 100$ and rises again at $\alpha = 300$, where the
+model smooths too much and relies too heavily on the shorter context
+(Figure~\ref{fig:sweeps}(a)). With too little smoothing ($\alpha = 10$)
+the trigram is worse than the bigram, likely because it trusts rarely
+seen contexts too much; with enough smoothing it is clearly better.
+Since trigram contexts are much sparser than bigram contexts, the
+trigram level might need a different amount of smoothing than the lower
+levels, which a single shared $\alpha$ cannot provide. We therefore also
+tried a separate concentration for the trigram level, keeping
+$\alpha = 100$ for the lower levels. Both less smoothing
+($\alpha_2 = 30$, perplexity 121.1) and more smoothing
+($\alpha_2 = 300$, perplexity 116.2) gave a higher perplexity than the
+shared $\alpha = 100$ (115.9). 
+Less smoothing gives slightly higher top-1 accuracy, but we select on
+perplexity.
+
+
+\paragraph{HMM and VB-HMM.} Both models improve steadily with $K$ and are still improving at $K = 64$ (Figure~\ref{fig:sweeps}(b)): we stopped there because the cost of EM grows as
+$K^2$. The VB-HMM is worse than the HMM at every $K$.
+For its emission prior, a
+uniform prior ($\beta_0 = 1$) is much worse, and $\beta_0 = 0.01$ is
+about the same as $\beta_0 = 0.1$.
+
+The loss curves (Figure~\ref{fig:curves}) suggest that the VB-HMM
+underfits. At $K=64$, its training loss remains substantially higher
+than the HMM's (about 5.2 versus 4.7 nats per token). At the same time,
+the HMM's validation loss continues to decrease, suggesting that
+overfitting is not the dominant issue. In this setting, the Bayesian
+regularization appears to reduce model flexibility more than it improves
+generalization.
+Two aspects of the VB-HMM likely contribute to this behavior. First, the
+Dirichlet emission prior adds $V\beta_0 \approx 1{,}100$ pseudo-counts to each state's
+emission distribution,
+effectively allocating a non-negligible fraction of the probability mass
+to a uniform background distribution rather than to words frequently
+emitted by that state. This also explains why $\beta_0=1$ performs much
+worse. Second, the $\exp(\mathbb{E}_q[\log B])$ terms used in the VB
+E-step are approximately equivalent to discounting each count by one half~\cite{johnson2007,asuncion2009}, which suppresses
+rare words and rarely used states.
+
+The VB-HMM's validation loss is even slightly lower than its training
+loss(Figure~\ref{fig:curves}(b)). A likely reason is that the validation text is easier for
+low-capacity models: it has almost three times as many \texttt{<unk>}
+tokens (3.1\% vs.\ 1.2\%), and \texttt{<unk>}, which merges all rare
+words, is easier to predict than an average word. The HMM with $K = 4$
+shows the same effect.
+
+
+\paragraph{LSTM.} The Optuna search (50 trials, hidden size 128, one
+layer) selected an embedding size of 256, dropout 0.29 and learning
+rate $6.2 \cdot 10^{-4}$, with a validation perplexity of 78.0. These
+values are used for all LSTMs below. Hidden size matters most: going
+from hidden size 64 to 256 lowers perplexity from about 87 to 73, while a
+second layer changes it by less than one point
+(Figure~\ref{fig:sweeps}(c)). Larger networks start to overfit sooner,
+and early stopping keeps the best epoch (Figure~\ref{fig:curves}).
+
+
+\paragraph{Comparison.} The LSTM is clearly best (72.9), followed by the trigram (115.9), the HMM (132.9) and the VB-HMM (172.9). The $n$-gram is a strong baseline here: its hierarchical smoothing lets a rare trigram
+context fall back on the bigram and then the unigram, instead of
+guessing, and its concentration $\alpha$ was tuned. The HMM, in
+contrast, predicts the next word only through its hidden state, so all
+information about the context must pass through a belief over 64
+states, while the $n$-gram keeps a separate distribution for every
+context seen in training. The HMM was also explored less: only up to
+$K = 64$, where it is still improving, from a single random
+initialisation, since EM finds only a local optimum. With more states
+it would likely come closer; it is already close to the bigram
+(132.9 vs.\ 128.6). 
+The ranking is the same for top-$k$ accuracy, but
+the gap between the LSTM and the trigram is much smaller: 46.4\% vs.\
+43.1\% top-5 accuracy, compared with 72.9 vs.\ 115.9 in perplexity. The
+trigram often ranks the true word among its top suggestions, but gives
+it lower probability than the LSTM does.
+
+
+
+\subsection{Test results}
+\label{sec:test}
+
+For each model type, the configuration with the lowest validation perplexity
+is evaluated once on the test split (Table~\ref{tab:test}). These are the
+same trained models as in Table~\ref{tab:all}, with no retraining.
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lrrrrr}
+\small
+\begin{tabular}{ll r rr rr}
 \toprule
-Model & Config & Val.\ PPL & Test PPL & Top-1 acc.\ (words) & Top-5 acc.\ (words) \\
+ & & & \multicolumn{2}{c}{All tokens} & \multicolumn{2}{c}{Words only} \\
+\cmidrule(lr){4-5} \cmidrule(lr){6-7}
+Model & Configuration & PPL $\downarrow$& Top-1 $\uparrow$& Top-5 $\uparrow$& Top-1$\uparrow$ & Top-5 $\uparrow$\\
 \midrule
-$n$-gram & \TODO{best (order, $\alpha_k$)} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
-HMM & \TODO{best $N$} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
-VB-HMM & \TODO{best $N$} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
-LSTM & \TODO{best config} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
-LSTM + MC Dropout & \TODO{best config} & \TODO{} & \TODO{} & \TODO{} & \TODO{} \\
+$n$-gram & order 3, $\alpha = 100$     & 121.4 & 20.1 & 43.5 & 14.4 & 34.4 \\
+HMM      & $K = 64$                    & 135.4 & 16.2 & 37.3 & 10.5 & 28.1 \\
+VB-HMM   & $K = 64$, $\beta_0 = 0.1$   & 177.9 & 14.4 & 34.9 & 8.3  & 24.8 \\
+LSTM     & hidden 256, 2 layers         & \textbf{75.5} & \textbf{23.8} & \textbf{46.9} & \textbf{16.6} & \textbf{38.3} \\
 \bottomrule
 \end{tabular}
-\caption{\TODO{Best-configuration comparison across model families
-(to be filled in from \texttt{results/comparison.csv}).}}
+\caption{Test results of the selected configuration of each model.
+Accuracies in \%.}
+\label{tab:test}
 \end{table}
 
-% \begin{figure}[h]
-%   \centering
-%   \includegraphics[width=0.8\textwidth]{figures/summary_comparison.png}
-%   \caption{\TODO{Best test perplexity and words-only top-5 accuracy per model family.}}
-% \end{figure}
+The test results confirm the validation ranking. Every model is slightly
+worse on test than on validation (by 2.5 to 5 perplexity points), which
+is expected, since the test stories differ more from the training data
+(higher \texttt{<unk>} rate, Table~\ref{tab:splits}), and the order of
+the models is unchanged.
+
+% ============================================================
+\section{Examples}
+% ============================================================
 
 % ============================================================
 \section{Discussion and Conclusion}
 % ============================================================
 
-\TODO{To be written once results are available. This section should
-address, at minimum: whether full-posterior VB-EM outperforms
-point-estimate MAP-EM for the HMM at matched state counts (and whether
-any gap narrows or widens with fewer latent states, where the
-Bayesian-shrinkage effect of VB-EM should matter most); whether MC
-Dropout changes the LSTM's point predictive performance or only adds
-uncertainty estimates; and how the two Bayesian latent-variable models
-(n-gram, HMM family) compare to the LSTM in the perplexity/accuracy
-vs.\ model-complexity trade-off.}
+
 
 % ============================================================
 \begin{thebibliography}{9}
@@ -571,11 +635,6 @@ M.~J. Beal.
 C.~M. Bishop.
 \newblock \emph{Pattern Recognition and Machine Learning}.
 \newblock Springer, 2006. Chapter 10: Approximate Inference.
-
-\bibitem{gal2016}
-Y.~Gal and Z.~Ghahramani.
-\newblock Dropout as a Bayesian approximation: Representing model uncertainty in deep learning.
-\newblock In \emph{Proceedings of the 33rd International Conference on Machine Learning (ICML)}, 2016.
 
 \bibitem{akiba2019}
 T.~Akiba, S.~Sano, T.~Yanase, T.~Ohta, and M.~Koyama.
@@ -607,6 +666,15 @@ S.~Hochreiter and J.~Schmidhuber.
 \newblock Long short-term memory.
 \newblock \emph{Neural Computation}, 9(8):1735--1780, 1997.
 
+\bibitem{johnson2007}
+M.~Johnson.
+\newblock Why doesn't EM find good HMM POS-taggers?
+\newblock In \emph{Proceedings of EMNLP-CoNLL}, pages 296--305, 2007.
+
+\bibitem{asuncion2009}
+A.~Asuncion, M.~Welling, P.~Smyth, and Y.~W. Teh.
+\newblock On smoothing and inference for topic models.
+\newblock In \emph{Proceedings of UAI}, 2009.
 \end{thebibliography}
 
 \end{document}
