@@ -6,12 +6,36 @@ n-gram model, an HMM trained with Baum-Welch (MAP-EM), a fully Bayesian HMM
 (Variational Bayes EM), and an LSTM RNN. Given a text prefix, each model suggests likely next words; all are trained
 and evaluated on the same corpus and vocabulary for a fair comparison.
 
+## Quick start: run the demo
+
+The trained models are included (`checkpoints/`: the best model of each family),
+so the demo runs without any training:
+
+```bash
+pip install -r requirements.txt
+python3 src/predict_demo.py \
+  --ngram-checkpoint checkpoints/ngram_3 --hmm-checkpoint checkpoints/hmm \
+  --vbhmm-checkpoint checkpoints/vbhmm --rnn-checkpoint checkpoints/rnn \
+  --text "Sherlock Holmes said that"
+```
+
+Each model prints its 5 most likely next words. Notes:
+- Leave out `--text` to run interactively: type a prefix, get suggestions,
+  Ctrl-D to quit.
+- Input is case-sensitive, like the training data ("Mr. Holmes", not "mr. holmes").
+- `<unk>`/`<eos>` are never suggested; add `--no-punct` to suggest words only,
+  and `--k 10` for more suggestions.
+- Any subset of the four `--*-checkpoint` options can be given.
+- Run from the repository root.
+
+The rest of this README describes how the data and models were built, to
+reproduce the experiments.
+
 ## Corpus
 
 The complete Arthur Conan Doyle Sherlock Holmes canon (public domain, via Project
 Gutenberg): 4 novels and 5 short-story anthologies, 9 files in `data/raw/`.
-Anthologies are automatically split into their individual stories (not just left as
-one blob per book) so that train/val/test splits happen at the *story* level —
+Anthologies are automatically split into their individual stories so that train/val/test splits happen at the *story* level —
 whole stories are held out, never individual paragraphs — avoiding the leakage that
 paragraph-level shuffling would cause.
 
@@ -24,7 +48,7 @@ Follows WikiText (Merity et al., 2016), which was tokenized with the Moses token
   listings and "By A. Conan Doyle" lines are dropped (unlike WikiText, which
   keeps section titles as `= Title =` lines: in these books they are layout and
   front matter, not content).
-- **Original case kept** (`Holmes`, `The` and `the` are distinct tokens).
+- **Original case kept** (`The` and `the` are distinct tokens).
 - **Every punctuation mark is a token**; curly/straight quote variants are unified,
   `--` becomes `—`, `…` becomes `...`.
 - **Moses/WikiText splitting**: `don't` → `don 't`, `Holmes's` → `Holmes 's`,
@@ -48,9 +72,8 @@ pip install -r requirements.txt
 #    paragraphs, tokenize, build vocab, split train/val/test at the story level.
 #    Changing preprocessing changes the vocab: retrain every model afterwards,
 #    and first move old outputs aside (experiment.py MERGES into an existing
-#    results/comparison.csv, and old checkpoints would sit next to new ones):
-#      mv checkpoints checkpoints_old; mv results results_old
-python3 src/preprocess.py            # --min-count 3 for the WikiText default
+#    results/comparison.csv, and old checkpoints would sit next to new ones).
+python3 src/preprocess.py            
 
 # 2. Train individual models (optional -- experiment.py below does all of this
 #    as a parameter sweep, but these are useful for one-off runs):
@@ -66,7 +89,7 @@ python3 src/train_rnn.py --hidden-size 256 --epochs 10
 python3 src/tune_rnn.py --hidden-size 128 --num-layers 1 --n-trials 50 --search-epochs 40 --final-epochs 50
 
 # 4. Run the full comparison: sweeps every model across its own parameters
-#    (n-gram order & alpha, HMM/VB-HMM states, RNN hidden/layers/dropout), saving a checkpoint,
+#    (n-gram order & alpha, HMM/VB-HMM states, RNN hidden/layers), saving a checkpoint,
 #    metrics, and training-loss history for every configuration.
 #    --vbhmm-beta0-sweep (optional) retrains VB-HMM at the best-val n_states
 #    with each emission prior beta0 given, to show the prior's effect.
@@ -82,15 +105,7 @@ python3 src/list_checkpoints.py --checkpoints-dir all_checkpoints_in_report \
 python3 src/plot_final.py            # report figures, reads all_checkpoints_in_report/
 python3 src/plot_history.py
 
-# 6. Try live next-word suggestions from any trained model(s). Without --text it
-#    runs interactively: type a prefix, get suggestions, Ctrl-D to quit.
-#    Input is case-sensitive, like the training data ("Mr. Holmes", not "mr. holmes").
-#    <unk>/<eos> are never suggested; add --no-punct to suggest words only.
-#    checkpoints/ holds the final (best) model of each family.
-python3 src/predict_demo.py \
-  --ngram-checkpoint checkpoints/ngram_3 --hmm-checkpoint checkpoints/hmm \
-  --vbhmm-checkpoint checkpoints/vbhmm --rnn-checkpoint checkpoints/rnn \
-  --text "Sherlock Holmes said that"
+# 6. Try the models: see "Quick start: run the demo" at the top.
 ```
 
 Every `train_*.py` script and `experiment.py` accept `--data-dir`, `--checkpoints-dir`,
@@ -113,7 +128,7 @@ for its full option list.
 - **HMM** (`hmm.py`) — a from-scratch categorical HMM trained with Baum-Welch
   (MAP-EM): scaled forward-backward in the E-step, then M-step point estimates
   `(expected count + ε)/(expected total + K·ε)` with `ε = 1e-3` (a MAP estimate
-  under a Dirichlet(1+ε) prior), implemented without `hmmlearn`. Parameters
+  under a Dirichlet(1+ε) prior). Parameters
   start at random so the states can break symmetry; EM stops after `--n-iter`
   iterations or when the training log-likelihood changes by less than `tol`.
 - **VB-HMM** (`vb_hmm.py`) — the same model made fully Bayesian: Dirichlet
