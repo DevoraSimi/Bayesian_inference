@@ -105,45 +105,10 @@ def _masked(probs, exclude_ids):
 @torch.no_grad()
 def suggest_next_words(model, prefix_ids, id2word, device, k=5, exclude_ids=()):
     """prefix_ids should start with <eos>, the paragraph-start input the
-    model is trained with (see paragraph_batches); same for mc_dropout_predict."""
+    model is trained with (see paragraph_batches)."""
     x = torch.tensor([prefix_ids], dtype=torch.long, device=device)
     logits, _ = model(x) # .eval() so dropout is disabled.
     last_logits = logits[0, -1]
     probs = torch.softmax(last_logits, dim=-1)
     top_probs, top_idx = _masked(probs, exclude_ids).topk(k)
     return [(id2word[i], float(p)) for i, p in zip(top_idx.tolist(), top_probs.tolist())]
-
-
-@torch.no_grad()
-def mc_dropout_predict(model, prefix_ids, id2word, device, k=5, n_samples=50, exclude_ids=()):
-    """Monte Carlo Dropout (Gal & Ghahramani, 2016): keeps dropout ACTIVE at
-    prediction time (model.train() instead of model.eval()) and runs
-    n_samples independent stochastic forward passes on the same input, each
-    with a different random dropout mask. Averaging the resulting softmax
-    distributions approximates Bayesian model averaging over an implicit
-    posterior over network weights; the standard deviation across samples
-    for each word gives an approximate predictive uncertainty that a single
-    deterministic forward pass (suggest_next_words) cannot provide.
-
-    Degenerate case: if the model was trained with dropout=0, every sample
-    is identical and std will be ~0 for all words -- expected, not a bug.
-    """
-    x = torch.tensor([prefix_ids], dtype=torch.long, device=device)
-
-    was_training = model.training
-    model.train()
-    samples = []
-    for _ in range(n_samples):
-        logits, _ = model(x)
-        samples.append(torch.softmax(logits[0, -1], dim=-1))
-    model.train(was_training)
-
-    probs_stack = torch.stack(samples)
-    mean_probs = probs_stack.mean(dim=0)
-    std_probs = probs_stack.std(dim=0)
-
-    top_probs, top_idx = _masked(mean_probs, exclude_ids).topk(k)
-    return [
-        (id2word[i], float(p), float(std_probs[i]))
-        for i, p in zip(top_idx.tolist(), top_probs.tolist())
-    ]

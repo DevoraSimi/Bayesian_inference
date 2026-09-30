@@ -9,23 +9,23 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-from checkpoints import save_metrics_checkpoint, save_pickle_checkpoint, save_rnn_checkpoint
+from checkpoints import save_pickle_checkpoint, save_rnn_checkpoint
 from data_utils import EOS, load_split_ids, punctuation_ids
-from evaluation import evaluate_hmm, evaluate_ngram, evaluate_rnn, evaluate_rnn_mc_dropout, metrics_to_row, rnn_nll
+from evaluation import evaluate_hmm, evaluate_ngram, evaluate_rnn, metrics_to_row, rnn_nll
 from hmm import train_hmm
 from ngram import alpha_tag, train_ngram
 from rnn import LSTMLanguageModel, paragraph_batches, train_epoch
 from vb_hmm import train_vb_hmm
 
 RESULT_FIELDS = [
-    "model", "param", "num_layers", "dropout", "alpha", "beta0", "mc_samples", "train_time_s",
+    "model", "param", "num_layers", "dropout", "alpha", "beta0", "train_time_s",
     "converged", "n_iter_used", "val_perplexity", "test_perplexity",
     "test_top1_acc", "test_top5_acc", "test_top1_acc_words", "test_top5_acc_words",
 ]
 
 
 def _row(model_name, param, train_time, val_metrics, test_metrics, converged="", n_iter_used="",
-         num_layers="", dropout="", alpha="", beta0="", mc_samples=""):
+         num_layers="", dropout="", alpha="", beta0=""):
     val_row = metrics_to_row(val_metrics)
     test_row = metrics_to_row(test_metrics)
     return {
@@ -35,7 +35,6 @@ def _row(model_name, param, train_time, val_metrics, test_metrics, converged="",
         "dropout": dropout,
         "alpha": alpha,
         "beta0": beta0,
-        "mc_samples": mc_samples,
         "train_time_s": round(train_time, 1),
         "converged": converged,
         "n_iter_used": n_iter_used,
@@ -178,7 +177,7 @@ def run_ngram_sweep(train_ids, val_ids, test_ids, vocab_size, eos_id, orders_lis
 
 def run_rnn_sweep(train_ids, val_ids, test_ids, vocab_size, eos_id, hidden_list, layers_list, dropout_list,
                    embed_size, epochs, batch_size, lr, seed, device, punct_ids, checkpoints_dir,
-                   mc_dropout_samples_list=(), patience=5):
+                   patience=5):
     """Sweeps the full grid hidden_size x num_layers x dropout. Each config
     trains for up to `epochs` epochs with early stopping: if val perplexity
     hasn't improved for `patience` epochs, training stops and the BEST
@@ -187,14 +186,6 @@ def run_rnn_sweep(train_ids, val_ids, test_ids, vocab_size, eos_id, hidden_list,
     here across the whole grid, since a bigger hidden_size/num_layers config
     is if anything more prone to overfitting than what a hyperparameter
     search might have been tuned at.
-
-    For each trained model, ALSO evaluates it with MC Dropout (dropout kept
-    active) once per n_samples value in mc_dropout_samples_list, reported as
-    separate "RNN-MCDropout" rows distinguished by their mc_samples column
-    -- same underlying weights, no separate checkpoint saved, just repeated
-    re-scoring of the same model at different sample counts, to see how
-    many stochastic passes it actually takes before perplexity/accuracy
-    stop changing (i.e. where the averaging has converged).
 
     Every paragraph is trained on and scored from a fresh hidden state
     (rnn.paragraph_batches), the same rule the HMM and n-gram follow."""
@@ -264,33 +255,10 @@ def run_rnn_sweep(train_ids, val_ids, test_ids, vocab_size, eos_id, hidden_list,
             model, optimizer, best_epoch, config, {"val": val_metrics, "test": test_metrics},
             Path(checkpoints_dir) / f"rnn_h{hidden_size}_l{num_layers}_d{dropout}", history=history,
         )
-
-        for n_samples in mc_dropout_samples_list:
-            print(f"[RNN-MCDropout] hidden_size={hidden_size} num_layers={num_layers} dropout={dropout} "
-                  f"n_samples={n_samples}")
-            mc_start = time.time()
-            mc_val_metrics = evaluate_rnn_mc_dropout(model, val_batches, punct_ids=punct_ids,
-                                                       n_samples=n_samples)
-            mc_test_metrics = evaluate_rnn_mc_dropout(model, test_batches, punct_ids=punct_ids,
-                                                        n_samples=n_samples)
-            mc_time = time.time() - mc_start
-            results.append(_row("RNN-MCDropout", hidden_size, mc_time, mc_val_metrics, mc_test_metrics,
-                                 num_layers=num_layers, dropout=dropout, mc_samples=n_samples))
-            print(results[-1])
-
-            mc_config = {
-                "model_type": "RNN-MCDropout", "hidden_size": hidden_size, "num_layers": num_layers,
-                "dropout": dropout, "n_samples": n_samples, "train_time_s": round(mc_time, 1),
-                "source_checkpoint": f"rnn_h{hidden_size}_l{num_layers}_d{dropout}",
-            }
-            save_metrics_checkpoint(
-                mc_config, {"val": mc_val_metrics, "test": mc_test_metrics},
-                Path(checkpoints_dir) / f"rnn_h{hidden_size}_l{num_layers}_d{dropout}_mc{n_samples}",
-            )
     return results
 
 
-CSV_KEY_FIELDS = ["model", "param", "num_layers", "dropout", "alpha", "beta0", "mc_samples"]
+CSV_KEY_FIELDS = ["model", "param", "num_layers", "dropout", "alpha", "beta0"]
 
 
 def _csv_row_key(row):
@@ -299,7 +267,7 @@ def _csv_row_key(row):
 
 def save_csv(results, path):
     """Merges `results` into any existing CSV at `path` (keyed by model +
-    param + num_layers + dropout + alpha + mc_samples), instead of blindly
+    param + num_layers + dropout + alpha + beta0), instead of blindly
     overwriting it -- so a partial run (e.g. via --skip-rnn) only updates
     the rows it actually produced, without discarding rows a PREVIOUS run
     computed for model families this run skipped."""
@@ -308,7 +276,9 @@ def save_csv(results, path):
     if path.exists():
         with open(path, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
-                merged[_csv_row_key(row)] = row
+                # keep only the current columns, so a CSV written by an older
+                # version (with extra columns) can still be merged
+                merged[_csv_row_key(row)] = {k: row.get(k, "") for k in RESULT_FIELDS}
     for r in results:
         merged[_csv_row_key(r)] = {k: r.get(k, "") for k in RESULT_FIELDS}
 
@@ -392,25 +362,6 @@ def plot_results(results, out_dir):
         plt.savefig(out_dir / "rnn_perplexity.png")
         plt.close()
 
-    mc_rows = [r for r in results if r["model"] == "RNN-MCDropout"]
-    if mc_rows:
-        plt.figure()
-        configs = sorted(set((r["param"], r["num_layers"], r["dropout"]) for r in mc_rows))
-        for hidden_size, layers, dropout in configs:
-            subset = sorted(
-                [r for r in mc_rows if r["param"] == hidden_size and r["num_layers"] == layers and r["dropout"] == dropout],
-                key=lambda r: r["mc_samples"],
-            )
-            xs = [r["mc_samples"] for r in subset]
-            ys = [r["test_perplexity"] for r in subset]
-            plt.plot(xs, ys, marker="o", label=f"hidden={hidden_size}, layers={layers}, dropout={dropout}")
-        plt.xlabel("MC-Dropout n_samples")
-        plt.ylabel("test perplexity")
-        plt.title("RNN-MCDropout: does more sampling change the result?")
-        plt.legend()
-        plt.savefig(out_dir / "mc_dropout_convergence.png")
-        plt.close()
-
     # headline comparison: per model type, the config with the lowest VAL
     # perplexity (selecting on test would bias the reported test numbers
     # optimistically), then report that config's test metrics
@@ -470,19 +421,13 @@ def main():
     parser.add_argument("--rnn-patience", type=int, default=5,
                          help="stop an RNN config's training early if val perplexity hasn't improved for this "
                               "many epochs; the saved checkpoint uses the best epoch's weights, not the last")
-    parser.add_argument("--mc-dropout-samples", type=int, nargs="+", default=[],
-                         help="if given, also evaluate each RNN config with MC Dropout once per n_samples value "
-                              "here, reported as separate RNN-MCDropout rows plus a metrics-only checkpoint each "
-                              "(re-scores the RNN's existing weights, so no new .pt is saved, just a .json) "
-                              "-- multiplies RNN evaluation cost accordingly, so empty (off) by default. "
-                              "e.g. --mc-dropout-samples 5 20 50 to see how many samples it takes to converge")
     parser.add_argument("--batch-size", type=int, default=20, help="RNN mini-batch size, in paragraphs")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--skip-ngram", action="store_true", help="skip the n-gram sweep entirely")
     parser.add_argument("--skip-hmm", action="store_true", help="skip the HMM sweep entirely")
     parser.add_argument("--skip-vbhmm", action="store_true", help="skip the VB-HMM sweep entirely")
-    parser.add_argument("--skip-rnn", action="store_true", help="skip the RNN sweep entirely (also skips MC-Dropout)")
+    parser.add_argument("--skip-rnn", action="store_true", help="skip the RNN sweep entirely")
     args = parser.parse_args()
 
     vbhmm_states = args.vbhmm_states or args.hmm_states
@@ -533,7 +478,7 @@ def main():
         rnn_results = run_rnn_sweep(
             train_ids, val_ids, test_ids, vocab_size, word2id[EOS], args.rnn_hidden, args.rnn_layers,
             args.rnn_dropout, args.rnn_embed_size, args.rnn_epochs, args.batch_size, args.lr, args.seed, device,
-            punct_ids, args.checkpoints_dir, args.mc_dropout_samples, args.rnn_patience,
+            punct_ids, args.checkpoints_dir, args.rnn_patience,
         )
 
     all_results = ngram_results + hmm_results + vbhmm_results + rnn_results

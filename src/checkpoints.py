@@ -28,18 +28,6 @@ def save_pickle_checkpoint(model, config, metrics, path, history=None, val_histo
     _save_metadata(path, config, metrics, history, val_history, train_nll_history)
 
 
-def save_metrics_checkpoint(config, metrics, path):
-    """Saves a metrics-only record (config + metrics, no model weights and no
-    .pkl/.pt) to <path>.json -- for results like RNN-MCDropout that re-score
-    an already-saved model's weights rather than training/saving a new one,
-    so there's no separate model file for them, just a JSON of what was
-    computed. Load it back the same way as any other checkpoint's metadata,
-    via load_metadata(path)."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _save_metadata(path, config, metrics)
-
-
 def load_pickle_checkpoint(path):
     path = Path(path)
     with open(with_ext(path, ".pkl"), "rb") as f:

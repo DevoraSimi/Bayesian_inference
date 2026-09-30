@@ -3,8 +3,7 @@
 A smartphone-keyboard-style next-word prediction system, built to compare several
 language-modeling approaches on the same corpus: a classical Dirichlet-smoothed
 n-gram model, an HMM trained with Baum-Welch (MAP-EM), a fully Bayesian HMM
-(Variational Bayes EM), and an LSTM RNN (with an optional MC-Dropout uncertainty
-mode). Given a text prefix, each model suggests likely next words; all are trained
+(Variational Bayes EM), and an LSTM RNN. Given a text prefix, each model suggests likely next words; all are trained
 and evaluated on the same corpus and vocabulary for a fair comparison.
 
 ## Corpus
@@ -67,8 +66,7 @@ python3 src/train_rnn.py --hidden-size 256 --epochs 10
 python3 src/tune_rnn.py --hidden-size 128 --num-layers 1 --n-trials 50 --search-epochs 40 --final-epochs 50
 
 # 4. Run the full comparison: sweeps every model across its own parameters
-#    (n-gram order & alpha, HMM/VB-HMM states, RNN hidden/layers/dropout, and
-#    optionally MC-Dropout at various sample counts), saving a checkpoint,
+#    (n-gram order & alpha, HMM/VB-HMM states, RNN hidden/layers/dropout), saving a checkpoint,
 #    metrics, and training-loss history for every configuration.
 #    --vbhmm-beta0-sweep (optional) retrains VB-HMM at the best-val n_states
 #    with each emission prior beta0 given, to show the prior's effect.
@@ -76,8 +74,7 @@ python3 src/experiment.py \
   --hmm-states 4 8 16 32 64 --vbhmm-states 4 8 16 32 64 \
   --vbhmm-beta0-sweep 0.01 0.1 1 \
   --ngram-orders 2 3 --ngram-alpha 30 100 300 \
-  --rnn-hidden 64 128 256 --rnn-layers 1 2 --rnn-dropout 0.2 --rnn-epochs 15 \
-  --mc-dropout-samples 5 20 50
+  --rnn-hidden 64 128 256 --rnn-layers 1 2 --rnn-dropout 0.2 --rnn-epochs 15
 
 # 5. Inspect results (every configuration is kept in all_checkpoints_in_report/)
 python3 src/list_checkpoints.py --checkpoints-dir all_checkpoints_in_report \
@@ -136,11 +133,7 @@ for its full option list.
   from a fresh hidden state with `<eos>` as its first input, so no context
   crosses paragraph boundaries and every model is scored on exactly the same
   tokens (`paragraph_batches`: `--batch-size` paragraphs per mini-batch,
-  padded, full backprop through each paragraph), with an optional
-  **MC-Dropout** mode (`mc_dropout_predict`, `evaluate_rnn_mc_dropout`) that
-  keeps dropout active at inference time and averages multiple stochastic
-  passes — an approximate Bayesian treatment of the network's weights (Gal &
-  Ghahramani, 2016), giving both a prediction and an uncertainty estimate.
+  padded, full backprop through each paragraph).
 
 ## Project layout
 
@@ -152,10 +145,10 @@ src/
   ngram.py              n-gram model
   hmm.py                 MAP-EM HMM (Baum-Welch)
   vb_hmm.py               Variational Bayes HMM
-  rnn.py                   LSTM model + MC-Dropout
+  rnn.py                   LSTM model
 
   evaluation.py             perplexity / top-k accuracy for every model,
-                             shared TopKAccumulator, MC-Dropout evaluation
+                             shared TopKAccumulator
   checkpoints.py             save/load: model weights + config + metrics +
                              training history, one self-contained pair of
                              files per checkpoint
@@ -170,7 +163,7 @@ src/
   list_checkpoints.py             tabular summary of every saved checkpoint
   plot_history.py                  train vs. val NLL curves (HMM, VB-HMM, RNN)
   predict_demo.py                   live next-word suggestions from any
-                                     trained model(s), with optional MC-Dropout
+                                     trained model(s)
 
 data/
   raw/                the 9 Gutenberg source files

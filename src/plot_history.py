@@ -19,9 +19,7 @@ def load_runs(checkpoints_dir):
     end of iteration/epoch k+1 -- so train and val are directly comparable, and
     so are all three model types. skipped_types names every OTHER model_type
     found in checkpoints_dir (e.g. Ngram, fit in one closed-form pass with no
-    iteration to plot; or RNN-MCDropout, which has no checkpoint/history of
-    its own since it re-scores an already-trained RNN rather than training
-    anything new), plus old checkpoints saved before train NLL was recorded."""
+    iteration to plot), plus old checkpoints saved before train NLL was recorded."""
     runs = {model_type: [] for model_type in MODEL_KEYS}
     skipped_types = set()
     for path in sorted(Path(checkpoints_dir).glob("*.json")):
@@ -97,9 +95,6 @@ def main():
     SKIP_REASONS = {
         "Ngram": "it's fit in one closed-form counting pass, not iteratively, so there's no per-iteration "
                  "loss to plot. See results/ngram_perplexity.png (from experiment.py) instead.",
-        "RNN-MCDropout": "it re-scores an already-trained RNN's existing weights rather than training "
-                          "anything new, so it has a metrics-only checkpoint but no training history to plot. "
-                          "See results/mc_dropout_convergence.png (from experiment.py) instead.",
     }
     for t in sorted(name for name in skipped_types if name):
         reason = SKIP_REASONS.get(t, "it has no per-iteration train/val history to plot.")
